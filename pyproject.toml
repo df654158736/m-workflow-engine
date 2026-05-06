@@ -1,0 +1,28 @@
+[project]
+name = "workflow-engine-demo"
+version = "0.2.0"
+description = "Temporal + DAG + LLM 智能工作流引擎演示"
+requires-python = ">=3.10"
+dependencies = [
+    "temporalio>=1.7.0",
+    "pyyaml>=6.0",
+    "pydantic>=2.0",
+    "structlog>=24.0",
+    "rich>=13.0",
+    "openai>=1.0.0",
+    "fastapi>=0.110.0",
+    "uvicorn>=0.27.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.24"]
+
+[project.scripts]
+wf-server = "backend.server:main"
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

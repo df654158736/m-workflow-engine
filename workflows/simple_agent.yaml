@@ -1,0 +1,24 @@
+# Simple: LLM + Tool 两步 Agent（最小可运行示例）
+
+workflow_id: wf-simple-agent
+name: "简单 Agent 示例"
+
+nodes:
+  - id: think
+    type: LLM
+    config:
+      prompt: "用户请求创建一个供应商对象，请分析应该创建哪些属性字段，用JSON格式返回"
+      model: qwen-plus
+
+  - id: act
+    type: Tool
+    config:
+      tool_id: act-create-object
+      args:
+        object_type: "Supplier"
+    inputs:
+      decision: "${think.outputs.text}"
+
+edges:
+  - from: think
+    to: act

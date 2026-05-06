@@ -1,0 +1,105 @@
+# 场景：智能采购决策
+# 展示 Agent 多轮 LLM 调用 + 条件分支 + 工具联动
+# Agent 决策点：先让 AI 分析需求 → 再让 AI 比价推荐 → 根据金额决定审批级别
+
+workflow_id: wf-intelligent-procurement
+name: "智能采购决策流程"
+
+nodes:
+  - id: parse_requirement
+    type: LLM
+    config:
+      prompt: "你是采购需求分析师。请解析以下采购申请，提取关键信息：\n\n采购申请：公司需要采购一批服务器设备用于新数据中心建设，预算约50万元，要求国产品牌，交付周期不超过30天。\n\n请提取：\n1. 采购品类\n2. 预算范围\n3. 核心要求（品牌/交付/规格等）\n4. 紧急程度（高/中/低）\n\n用JSON返回。"
+      model: qwen-plus
+      system_prompt: "你是企业采购AI助手，擅长解析采购需求并结构化。"
+      temperature: 0.2
+
+  - id: search_suppliers
+    type: FlinkSQL
+    config:
+      sql: "SELECT supplier_id, name, rating, avg_delivery_days, category FROM ontology.suppliers WHERE category = 'IT设备' AND status = 'ACTIVE' AND rating >= 4.0 ORDER BY rating DESC LIMIT 5"
+      sink: bronze.candidate_suppliers
+      description: "从供应商知识图谱中筛选符合条件的候选供应商"
+    inputs:
+      requirement: "${parse_requirement.outputs.text}"
+
+  - id: ai_compare_recommend
+    type: LLM
+    config:
+      prompt: "你是采购比价专家。根据以下采购需求和候选供应商列表，进行综合比较并推荐最优供应商。\n\n评估维度：\n1. 价格竞争力（权重30%）\n2. 交付能力（权重25%）\n3. 质量信誉（权重25%）\n4. 售后服务（权重20%）\n\n请给出：\n1. TOP 3 推荐排序及理由\n2. 推荐采购金额\n3. 预计总金额(estimated_amount 数字)\n4. 风险提示\n\n用JSON返回，确保包含 estimated_amount 字段（数字类型）。"
+      model: qwen-plus
+      system_prompt: "你是供应链管理专家，擅长供应商比价分析和采购策略制定。"
+      temperature: 0.4
+    inputs:
+      requirement: "${parse_requirement.outputs.text}"
+      candidates: "${search_suppliers.outputs.dataset_ref}"
+
+  - id: amount_check
+    type: Condition
+    config:
+      expression: "True"
+      true_branch: "high_value"
+      false_branch: "low_value"
+      description: "Agent 决策：金额>10万需总监审批，≤10万经理即可（demo 中固定走 high_value）"
+    inputs:
+      amount: "${ai_compare_recommend.outputs.text}"
+
+  - id: director_approval
+    type: Approval
+    config:
+      title: "大额采购审批（>10万元）"
+      description: "AI推荐的采购方案金额超过10万元，需要采购总监审批。请查看AI比价分析报告。"
+      approvers: ["procurement_director", "finance_manager"]
+    inputs:
+      recommendation: "${ai_compare_recommend.outputs.text}"
+    when: "amount_check.get('branch') == 'high_value'"
+
+  - id: create_po
+    type: Tool
+    config:
+      tool_id: act-create-purchase-order
+      args:
+        status: "CONFIRMED"
+        workflow: "intelligent_procurement"
+      description: "创建采购订单，写入ERP系统"
+    inputs:
+      recommendation: "${ai_compare_recommend.outputs.text}"
+    when: "director_approval.get('decision') == 'APPROVED' or amount_check.get('branch') == 'low_value'"
+
+  - id: notify_supplier
+    type: Function
+    config:
+      function_id: fn-send-po-notification
+      description: "向中标供应商发送采购通知"
+    inputs:
+      po_ref: "${create_po.outputs.result}"
+    when: "director_approval.get('decision') == 'APPROVED' or amount_check.get('branch') == 'low_value'"
+
+  - id: rejected_replan
+    type: LLM
+    config:
+      prompt: "采购方案被总监拒绝，请根据以下原因给出调整建议：\n1. 是否需要重新比价\n2. 可能的替代方案\n3. 建议的下一步行动"
+      model: qwen-plus
+      system_prompt: "你是采购策略顾问。"
+    inputs:
+      original_plan: "${ai_compare_recommend.outputs.text}"
+      rejection_reason: "${director_approval.outputs.comment}"
+    when: "director_approval.get('decision') == 'REJECTED'"
+
+edges:
+  - from: parse_requirement
+    to: search_suppliers
+  - from: parse_requirement
+    to: ai_compare_recommend
+  - from: search_suppliers
+    to: ai_compare_recommend
+  - from: ai_compare_recommend
+    to: amount_check
+  - from: amount_check
+    to: director_approval
+  - from: director_approval
+    to: create_po
+  - from: director_approval
+    to: rejected_replan
+  - from: create_po
+    to: notify_supplier

@@ -1,0 +1,41 @@
+# 条件分支示例 — 展示 Condition 节点的动态路由
+
+workflow_id: wf-branch-demo
+name: "条件分支 Demo"
+
+nodes:
+  - id: fetch_score
+    type: Function
+    config:
+      function_id: fn-get-supplier-score
+
+  - id: decide
+    type: Condition
+    config:
+      expression: "score > 0.7"
+      true_branch: "good"
+      false_branch: "bad"
+    inputs:
+      score: "${fetch_score.outputs.result}"
+
+  - id: approve_auto
+    type: Tool
+    config:
+      tool_id: act-auto-approve
+      args: { reason: "score above threshold" }
+    when: "decide.get('branch') == 'good'"
+
+  - id: flag_review
+    type: LLM
+    config:
+      prompt: "Supplier score is below threshold. Generate review summary."
+      model: gpt-4o
+    when: "decide.get('branch') == 'bad'"
+
+edges:
+  - from: fetch_score
+    to: decide
+  - from: decide
+    to: approve_auto
+  - from: decide
+    to: flag_review

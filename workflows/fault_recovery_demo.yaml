@@ -1,0 +1,38 @@
+# 场景：Temporal 故障恢复演示
+# 步骤：step1(快) → step2(慢,10s) → step3(快)
+# 演示：在 step2 执行期间杀掉 Worker，重启后 Temporal 自动重试 step2
+
+workflow_id: wf-fault-recovery
+name: "故障恢复演示（杀 Worker 后自���恢复）"
+
+nodes:
+  - id: step1_prepare
+    type: Function
+    config:
+      function_id: fn-prepare-data
+      description: "第1步���准备数据（快速完成）"
+
+  - id: step2_slow_llm
+    type: LLM
+    on_error: RETRY
+    config:
+      prompt: "这是一个故障恢复测试。请写一段200字的关于供应链韧性的分析。要求详细展开。"
+      model: qwen-plus
+      temperature: 0.5
+      description: "第2步：LLM 分析（耗时较长，模拟期间杀 Worker）"
+
+  - id: step3_save
+    type: Tool
+    config:
+      tool_id: act-save-result
+      args:
+        target: "ontology"
+      description: "第3步：保存结果（Worker 恢复后应自动执行到这里）"
+    inputs:
+      data: "${step2_slow_llm.outputs.text}"
+
+edges:
+  - from: step1_prepare
+    to: step2_slow_llm
+  - from: step2_slow_llm
+    to: step3_save

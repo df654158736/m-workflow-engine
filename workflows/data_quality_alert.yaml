@@ -1,0 +1,95 @@
+# 场景：数据质量异常自动诊断与修复
+# 展示 Agent 如何：检测异常 → AI 分析根因 → 条件判断严重程度 → 自动修复或升级人工
+# Agent 决策点：根据异常严重程度决定自动修复还是需要人介入
+
+workflow_id: wf-data-quality-alert
+name: "数据质量异常诊断修复"
+
+nodes:
+  - id: detect_anomaly
+    type: FlinkSQL
+    config:
+      sql: "SELECT table_name, column_name, null_ratio, duplicate_ratio, outlier_count FROM dq_monitor.latest_scan WHERE null_ratio > 0.1 OR duplicate_ratio > 0.05 ORDER BY severity DESC LIMIT 10"
+      sink: bronze.dq_alerts
+      description: "从数据质量监控表中检测异常指标"
+
+  - id: analyze_root_cause
+    type: LLM
+    config:
+      prompt: "你是数据工程专家。以下是检测到的数据质量异常：\n\n请分析：\n1. 最可能的根因是什么？（数据源问题/ETL逻辑错误/上游系统变更/人工录入错误）\n2. 严重程度：critical/warning/info\n3. 建议修复方案\n4. 是否可以自动修复（true/false）\n\n用JSON格式回答，包含 severity, root_cause, fix_plan, auto_fixable 字段。"
+      model: qwen-plus
+      system_prompt: "你是数据治理AI助手，熟悉常见数据质量问题模式，能根据异常指标推断根因。"
+      temperature: 0.2
+    inputs:
+      anomaly_data: "${detect_anomaly.outputs.dataset_ref}"
+
+  - id: severity_check
+    type: Condition
+    config:
+      expression: "'critical' in str(text).lower()"
+      true_branch: "escalate"
+      false_branch: "auto_fix"
+      description: "Agent 决策：critical 级别必须人工介入，其他尝试自动修复"
+    inputs:
+      text: "${analyze_root_cause.outputs.text}"
+
+  - id: auto_repair
+    type: Tool
+    config:
+      tool_id: act-data-repair
+      args:
+        strategy: "fill_median_and_dedup"
+        dry_run: false
+      description: "执行自动修复：中位数填充空值 + 去重"
+    inputs:
+      analysis: "${analyze_root_cause.outputs.text}"
+    when: "severity_check.get('branch') == 'auto_fix'"
+
+  - id: escalate_approval
+    type: Approval
+    config:
+      title: "Critical 数据异常 — 需数据负责人确认修复方案"
+      description: "AI 检测到严重数据质量问题，自动修复风险过高，请确认是否按AI建议方案执行。"
+      approvers: ["data_owner", "data_engineer_lead"]
+    inputs:
+      ai_diagnosis: "${analyze_root_cause.outputs.text}"
+    when: "severity_check.get('branch') == 'escalate'"
+
+  - id: manual_repair
+    type: Tool
+    config:
+      tool_id: act-data-repair
+      args:
+        strategy: "human_confirmed_fix"
+        dry_run: false
+      description: "按人工确认的方案执行修复"
+    inputs:
+      plan: "${analyze_root_cause.outputs.text}"
+    when: "escalate_approval.get('decision') == 'APPROVED'"
+
+  - id: write_audit_log
+    type: Function
+    config:
+      function_id: fn-write-audit-log
+      description: "写入数据治理审计日志，记录本次异常处理过程"
+    inputs:
+      anomaly: "${detect_anomaly.outputs.dataset_ref}"
+      diagnosis: "${analyze_root_cause.outputs.text}"
+
+edges:
+  - from: detect_anomaly
+    to: analyze_root_cause
+  - from: analyze_root_cause
+    to: severity_check
+  - from: severity_check
+    to: auto_repair
+  - from: severity_check
+    to: escalate_approval
+  - from: escalate_approval
+    to: manual_repair
+  - from: auto_repair
+    to: write_audit_log
+  - from: manual_repair
+    to: write_audit_log
+  - from: severity_check
+    to: write_audit_log

@@ -1,0 +1,1158 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agent 工作流引擎 — DAG 可视化</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: #0a0e14; color: #e7e9ea; min-height: 100vh;
+}
+.header {
+  background: linear-gradient(135deg, #1a1f2e, #0f172a);
+  border-bottom: 1px solid #1e3a5f;
+  padding: 12px 24px;
+  display: flex; align-items: center; justify-content: space-between;
+}
+.header h1 { font-size: 17px; color: #60a5fa; }
+.badges { display: flex; gap: 8px; }
+.badge { padding: 3px 10px; border-radius: 10px; font-size: 11px; }
+.badge-green { background: #065f46; color: #6ee7b7; }
+.badge-blue { background: #1e3a5f; color: #93c5fd; }
+
+.container { max-width: 1600px; margin: 0 auto; padding: 16px 20px; }
+
+/* Workflow tabs */
+.tabs { display: flex; gap: 6px; margin-bottom: 16px; flex-wrap: wrap; }
+.tab {
+  padding: 8px 16px; background: #1e293b; border: 1px solid #334155;
+  border-radius: 6px; color: #94a3b8; cursor: pointer; font-size: 12px; transition: all 0.2s;
+}
+.tab:hover { border-color: #60a5fa; color: #cbd5e1; }
+.tab.active { background: #1e3a5f; border-color: #3b82f6; color: #93c5fd; font-weight: 600; }
+
+/* Two columns: DAG left, timeline right */
+.main-grid { display: grid; grid-template-columns: 1fr 480px; gap: 16px; }
+@media (max-width: 1200px) { .main-grid { grid-template-columns: 1fr; } }
+
+/* DAG Panel */
+.dag-panel {
+  background: #111827; border: 1px solid #1f2937; border-radius: 10px; padding: 16px;
+}
+.dag-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+.dag-header h3 { font-size: 14px; color: #60a5fa; }
+.run-btn {
+  padding: 8px 20px; background: linear-gradient(135deg, #2563eb, #1d4ed8);
+  border: none; border-radius: 6px; color: white; font-size: 13px; font-weight: 600;
+  cursor: pointer; transition: all 0.2s;
+}
+.run-btn:hover { background: linear-gradient(135deg, #3b82f6, #2563eb); }
+.run-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.dag-info { font-size: 11px; color: #6b7280; margin-bottom: 12px; }
+
+/* DAG Canvas */
+.dag-canvas { position: relative; overflow: auto; }
+.dag-canvas svg { position: absolute; top: 0; left: 0; pointer-events: none; z-index: 1; }
+.dag-nodes-container { position: relative; z-index: 2; }
+
+.dag-node {
+  position: absolute;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 2px solid #374151;
+  background: #1f2937;
+  font-size: 11px;
+  width: 155px;
+  text-align: center;
+  cursor: pointer;
+  transition: all 0.3s;
+}
+.dag-node:hover { transform: scale(1.05); z-index: 10; box-shadow: 0 0 20px rgba(96,165,250,0.2); }
+.dag-node.highlight { box-shadow: 0 0 20px rgba(251,191,36,0.5) !important; transform: scale(1.08); z-index: 10; }
+
+/* Step number badge */
+.dag-node .step-num {
+  position: absolute; top: -10px; left: -10px;
+  width: 22px; height: 22px; border-radius: 50%;
+  background: #374151; color: #94a3b8;
+  font-size: 10px; font-weight: 700;
+  display: flex; align-items: center; justify-content: center;
+  border: 2px solid #0a0e14;
+}
+
+.dag-node .node-icon { font-size: 16px; }
+.dag-node .node-id { font-weight: 600; margin: 2px 0; font-size: 11px; }
+.dag-node .node-type { font-size: 9px; opacity: 0.6; }
+.dag-node .node-queue { font-size: 9px; color: #60a5fa; opacity: 0.8; margin-top: 2px; }
+
+/* Node type styles */
+.dag-node[data-type="LLM"] { border-color: #7c3aed; background: #1e1b3a; }
+.dag-node[data-type="LLM"] .node-id { color: #c4b5fd; }
+.dag-node[data-type="LLM"] .step-num { background: #7c3aed; color: white; }
+
+.dag-node[data-type="Tool"] { border-color: #0891b2; background: #0c1e2b; }
+.dag-node[data-type="Tool"] .node-id { color: #67e8f9; }
+.dag-node[data-type="Tool"] .step-num { background: #0891b2; color: white; }
+
+.dag-node[data-type="FlinkSQL"] { border-color: #059669; background: #0c1f1a; }
+.dag-node[data-type="FlinkSQL"] .node-id { color: #6ee7b7; }
+.dag-node[data-type="FlinkSQL"] .step-num { background: #059669; color: white; }
+
+.dag-node[data-type="Function"] { border-color: #d97706; background: #1c1708; }
+.dag-node[data-type="Function"] .node-id { color: #fcd34d; }
+.dag-node[data-type="Function"] .step-num { background: #d97706; color: white; }
+
+.dag-node[data-type="Condition"] { border-color: #dc2626; background: #1f0c0c; }
+.dag-node[data-type="Condition"] .node-id { color: #fca5a5; }
+.dag-node[data-type="Condition"] .step-num { background: #dc2626; color: white; }
+
+.dag-node[data-type="Approval"] { border-color: #a855f7; background: #2d1b69; }
+.dag-node[data-type="Approval"] .node-id { color: #e9d5ff; }
+.dag-node[data-type="Approval"] .step-num { background: #a855f7; color: white; }
+
+/* Execution states */
+.dag-node.state-running { animation: glow-run 1.5s infinite; }
+.dag-node.state-completed .step-num { background: #10b981 !important; }
+.dag-node.state-completed { border-color: #10b981 !important; box-shadow: 0 0 8px rgba(16,185,129,0.3); }
+.dag-node.state-failed .step-num { background: #ef4444 !important; }
+.dag-node.state-failed { border-color: #ef4444 !important; }
+.dag-node.state-skipped { opacity: 0.35; }
+.dag-node.state-skipped .step-num { background: #6b7280 !important; }
+.dag-node.state-waiting { animation: glow-wait 2s infinite; }
+@keyframes glow-run { 0%,100% { box-shadow: 0 0 4px rgba(251,191,36,0.3); } 50% { box-shadow: 0 0 20px rgba(251,191,36,0.5); } }
+@keyframes glow-wait { 0%,100% { box-shadow: 0 0 4px rgba(168,85,247,0.3); } 50% { box-shadow: 0 0 20px rgba(168,85,247,0.5); } }
+
+/* Decision tag */
+.decision-tag {
+  position: absolute; top: -10px; right: -6px;
+  background: #f59e0b; color: #000; font-size: 8px; font-weight: 700;
+  padding: 2px 5px; border-radius: 6px; white-space: nowrap;
+}
+
+/* Legend */
+.legend { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 12px; padding-top: 10px; border-top: 1px solid #1f2937; }
+.legend-item { display: flex; align-items: center; gap: 4px; font-size: 10px; color: #6b7280; }
+.legend-dot { width: 8px; height: 8px; border-radius: 2px; }
+
+/* Right Panel: Execution Timeline */
+.timeline-panel {
+  background: #111827; border: 1px solid #1f2937; border-radius: 10px;
+  padding: 16px; max-height: calc(100vh - 120px); overflow-y: auto;
+}
+.timeline-panel h3 { font-size: 14px; color: #f59e0b; margin-bottom: 12px; }
+
+.tl-item {
+  padding: 10px 12px 10px 40px;
+  margin-bottom: 6px;
+  border-radius: 6px;
+  background: #1a2030;
+  border: 1px solid #2d3748;
+  position: relative;
+  cursor: pointer;
+  transition: all 0.2s;
+  font-size: 12px;
+}
+.tl-item:hover { border-color: #60a5fa; background: #1e293b; }
+.tl-item.highlight { border-color: #f59e0b; background: #1c1708; }
+
+/* Step number in timeline (matches DAG) */
+.tl-item .tl-num {
+  position: absolute; left: 10px; top: 10px;
+  width: 22px; height: 22px; border-radius: 50%;
+  font-size: 10px; font-weight: 700;
+  display: flex; align-items: center; justify-content: center;
+  color: white;
+}
+
+.tl-item .tl-header {
+  display: flex; align-items: center; gap: 8px; margin-bottom: 4px;
+}
+.tl-item .tl-node-name { font-weight: 600; color: #e2e8f0; }
+.tl-item .tl-type-badge {
+  font-size: 9px; padding: 1px 6px; border-radius: 3px; color: white;
+}
+.tl-item .tl-status {
+  font-size: 9px; padding: 1px 6px; border-radius: 3px; margin-left: auto;
+}
+.tl-status-completed { background: #065f46; color: #6ee7b7; }
+.tl-status-skipped { background: #374151; color: #9ca3af; }
+.tl-status-failed { background: #7f1d1d; color: #fca5a5; }
+.tl-status-waiting { background: #3b0764; color: #e9d5ff; }
+
+.tl-item .tl-agent-action {
+  color: #f59e0b; font-size: 11px; font-weight: 500; margin-bottom: 4px;
+}
+.tl-item .tl-detail {
+  color: #94a3b8; font-size: 11px; line-height: 1.5;
+}
+.tl-item .tl-expand {
+  display: none;
+  background: #0f172a; border-radius: 4px; padding: 8px; margin-top: 6px;
+  font-size: 11px; color: #cbd5e1; white-space: pre-wrap; word-break: break-all;
+  max-height: 200px; overflow-y: auto; line-height: 1.5;
+}
+.tl-item.expanded .tl-expand { display: block; }
+
+.tl-item .tl-meta {
+  display: flex; gap: 10px; margin-top: 4px; font-size: 10px; color: #6b7280;
+}
+
+/* Type badge colors */
+.type-llm { background: #7c3aed; }
+.type-tool { background: #0891b2; }
+.type-flinksql { background: #059669; }
+.type-function { background: #d97706; }
+.type-condition { background: #dc2626; }
+.type-approval { background: #a855f7; }
+
+/* Stats */
+.stats-row { display: flex; gap: 8px; margin: 12px 0; flex-wrap: wrap; }
+.stat-chip { background: #1f2937; padding: 4px 10px; border-radius: 4px; font-size: 11px; }
+.stat-chip .v { color: #60a5fa; font-weight: 600; }
+
+/* Approval overlay */
+.overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.75);
+  display: none; align-items: center; justify-content: center; z-index: 1000;
+}
+.overlay.show { display: flex; }
+.approval-card {
+  background: #1e1b3a; border: 2px solid #7c3aed; border-radius: 14px;
+  padding: 24px; max-width: 480px; width: 90%;
+}
+.approval-card h3 { color: #c4b5fd; font-size: 16px; margin-bottom: 10px; }
+.approval-card .desc { color: #a78bfa; font-size: 12px; line-height: 1.5; margin-bottom: 10px; }
+.approval-card .ctx {
+  background: #0f0d1a; border-radius: 6px; padding: 10px; font-size: 11px;
+  color: #94a3b8; max-height: 120px; overflow-y: auto; white-space: pre-wrap; margin-bottom: 12px;
+}
+.approval-card .who { font-size: 10px; color: #7c3aed; margin-bottom: 14px; }
+.approval-btns { display: flex; gap: 10px; }
+.approval-btns button {
+  flex: 1; padding: 10px; border: none; border-radius: 6px;
+  font-size: 13px; font-weight: 600; cursor: pointer;
+}
+.btn-yes { background: #059669; color: white; }
+.btn-no { background: #dc2626; color: white; }
+
+/* Agent Input Section */
+.agent-input-section {
+  background: #111827; border: 1px solid #1f2937; border-radius: 10px;
+  padding: 16px; margin-bottom: 16px;
+}
+.agent-input-section h3 { font-size: 14px; color: #f59e0b; margin-bottom: 10px; }
+.agent-input-section .desc { font-size: 11px; color: #6b7280; margin-bottom: 10px; }
+.input-row { display: flex; gap: 8px; }
+.input-row input {
+  flex: 1; padding: 10px 14px; background: #1f2937; border: 1px solid #374151;
+  border-radius: 6px; color: #e2e8f0; font-size: 13px; outline: none;
+}
+.input-row input:focus { border-color: #60a5fa; }
+.input-row button {
+  padding: 10px 20px; background: linear-gradient(135deg, #f59e0b, #d97706);
+  border: none; border-radius: 6px; color: white; font-size: 13px; font-weight: 600;
+  cursor: pointer; white-space: nowrap;
+}
+.input-row button:disabled { opacity: 0.5; cursor: not-allowed; }
+.plan-status { margin-top: 10px; font-size: 12px; color: #6b7280; }
+.plan-result {
+  margin-top: 12px; background: #0f172a; border: 1px solid #1e3a5f; border-radius: 8px; padding: 12px;
+  display: none;
+}
+.plan-result h4 { color: #60a5fa; font-size: 12px; margin-bottom: 8px; }
+.plan-result .yaml-preview {
+  background: #020617; border-radius: 4px; padding: 10px; font-family: monospace;
+  font-size: 11px; color: #94a3b8; max-height: 200px; overflow-y: auto;
+  white-space: pre-wrap; line-height: 1.5;
+}
+.plan-result .plan-actions { display: flex; gap: 8px; margin-top: 10px; }
+.plan-result .plan-actions button {
+  padding: 8px 16px; border: none; border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer;
+}
+.plan-confirm { background: #059669; color: white; }
+.plan-retry { background: #374151; color: #cbd5e1; }
+
+/* Pipeline visualization */
+.pipeline-flow {
+  display: flex; align-items: center; gap: 4px; margin: 12px 0; padding: 10px;
+  background: #0f172a; border-radius: 6px; overflow-x: auto;
+}
+.pipeline-step {
+  padding: 6px 10px; border-radius: 4px; font-size: 10px; white-space: nowrap;
+  font-weight: 600;
+}
+.pipeline-step.active { animation: pulse-step 1s infinite; }
+@keyframes pulse-step { 0%,100% { opacity: 1; } 50% { opacity: 0.6; } }
+.pipeline-arrow { color: #4b5563; font-size: 14px; }
+.ps-input { background: #1e3a5f; color: #93c5fd; }
+.ps-plan { background: #4c1d95; color: #c4b5fd; }
+.ps-dag { background: #065f46; color: #6ee7b7; }
+.ps-exec { background: #7c2d12; color: #fdba74; }
+.ps-done { background: #1f2937; color: #6b7280; }
+
+/* Mode tabs */
+.mode-tabs { display: flex; gap: 6px; margin-bottom: 16px; }
+.mode-tab {
+  padding: 8px 16px; background: #1e293b; border: 1px solid #334155;
+  border-radius: 6px; color: #94a3b8; cursor: pointer; font-size: 12px;
+}
+.mode-tab.active { background: #1e3a5f; border-color: #3b82f6; color: #93c5fd; font-weight: 600; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>🧠 Agent 工作流引擎 — DAG 执行可视化</h1>
+  <div class="badges">
+    <span class="badge badge-green" id="badge-temporal">✓ Temporal</span>
+    <span class="badge badge-green" id="badge-llm">✓ Qwen-Plus</span>
+    <button onclick="openSettings()" style="margin-left:8px;padding:4px 10px;background:#374151;border:1px solid #4b5563;border-radius:4px;color:#94a3b8;font-size:11px;cursor:pointer;">⚙ 配置</button>
+  </div>
+</div>
+
+<!-- Settings Modal -->
+<div id="settings-modal" style="display:none;position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.7);display:none;align-items:center;justify-content:center;">
+  <div style="background:#1e293b;border:1px solid #334155;border-radius:12px;padding:24px;width:480px;max-width:90vw;">
+    <h3 style="color:#e2e8f0;margin:0 0 16px;font-size:16px;">⚙ 运行模式配置</h3>
+
+    <div style="margin-bottom:16px;">
+      <label style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:10px;background:#0f172a;border-radius:6px;border:1px solid #334155;">
+        <input type="radio" name="cfg-mode" value="standalone" id="cfg-mode-standalone" onchange="toggleConfigFields()">
+        <div>
+          <div style="color:#60a5fa;font-weight:600;font-size:13px;">⚡ 单机模式</div>
+          <div style="color:#6b7280;font-size:11px;">无需外部依赖，所有节点模拟执行</div>
+        </div>
+      </label>
+      <label style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:10px;background:#0f172a;border-radius:6px;border:1px solid #334155;margin-top:8px;">
+        <input type="radio" name="cfg-mode" value="full" id="cfg-mode-full" onchange="toggleConfigFields()">
+        <div>
+          <div style="color:#10b981;font-weight:600;font-size:13px;">🔗 完整模式</div>
+          <div style="color:#6b7280;font-size:11px;">连接 Temporal + LLM，真实执行</div>
+        </div>
+      </label>
+    </div>
+
+    <div id="cfg-full-fields" style="display:none;background:#0f172a;border-radius:8px;padding:14px;border:1px solid #1e3a5f;">
+      <div style="margin-bottom:10px;">
+        <label style="color:#94a3b8;font-size:11px;display:block;margin-bottom:4px;">Temporal 地址</label>
+        <input type="text" id="cfg-temporal" placeholder="192.168.2.60:7233" style="width:100%;padding:8px;background:#1e293b;border:1px solid #374151;border-radius:4px;color:#e2e8f0;font-size:12px;">
+      </div>
+      <div style="margin-bottom:10px;">
+        <label style="color:#94a3b8;font-size:11px;display:block;margin-bottom:4px;">LLM API Key</label>
+        <input type="password" id="cfg-api-key" placeholder="sk-xxxxxxxxxx" style="width:100%;padding:8px;background:#1e293b;border:1px solid #374151;border-radius:4px;color:#e2e8f0;font-size:12px;">
+      </div>
+      <div style="margin-bottom:10px;">
+        <label style="color:#94a3b8;font-size:11px;display:block;margin-bottom:4px;">LLM Base URL</label>
+        <input type="text" id="cfg-base-url" placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1" style="width:100%;padding:8px;background:#1e293b;border:1px solid #374151;border-radius:4px;color:#e2e8f0;font-size:12px;">
+      </div>
+      <div>
+        <label style="color:#94a3b8;font-size:11px;display:block;margin-bottom:4px;">模型名称</label>
+        <input type="text" id="cfg-model" placeholder="qwen-plus" style="width:100%;padding:8px;background:#1e293b;border:1px solid #374151;border-radius:4px;color:#e2e8f0;font-size:12px;">
+      </div>
+    </div>
+
+    <div id="cfg-error" style="display:none;margin-top:12px;padding:10px;background:#7f1d1d;border-radius:6px;color:#fca5a5;font-size:12px;"></div>
+    <div id="cfg-success" style="display:none;margin-top:12px;padding:10px;background:#064e3b;border-radius:6px;color:#6ee7b7;font-size:12px;"></div>
+
+    <div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end;">
+      <button onclick="closeSettings()" style="padding:8px 16px;background:#374151;border:none;border-radius:6px;color:#94a3b8;font-size:12px;cursor:pointer;">取消</button>
+      <button onclick="applySettings()" id="cfg-apply-btn" style="padding:8px 16px;background:#2563eb;border:none;border-radius:6px;color:white;font-size:12px;font-weight:600;cursor:pointer;">应用</button>
+    </div>
+  </div>
+</div>
+
+<div class="container">
+  <!-- Mode switch -->
+  <div class="mode-tabs">
+    <div class="mode-tab active" onclick="switchMode('agent')">🤖 Agent 模式（用户输入 → LLM 规划 → 执行）</div>
+    <div class="mode-tab" onclick="switchMode('preset')">📋 预设场景（选择已有 workflow 执行）</div>
+  </div>
+
+  <!-- Agent Mode: Input → Plan → Execute -->
+  <div id="agent-mode">
+    <div class="agent-input-section">
+      <h3 id="agent-input-title">① 用户输入需求（自然语言）</h3>
+      <div class="desc" id="agent-input-desc">Agent 收到你的请求后，会调用 LLM 将其分解为一个 DAG 工作流，然后交给 Temporal 执行。</div>
+      <!-- Full mode: free text input -->
+      <div class="input-row" id="agent-input-full">
+        <input type="text" id="user-input" placeholder="例：帮我评估供应商A的风险，如果风险高需要人工审批后拉黑" />
+        <button id="plan-btn" onclick="planWorkflow()">🧠 Agent 规划</button>
+      </div>
+      <!-- Standalone mode: dropdown -->
+      <div class="input-row" id="agent-input-standalone" style="display:none">
+        <select id="plan-template-select" style="flex:1;padding:8px 12px;border-radius:6px;border:1px solid #374151;background:#1e293b;color:#e2e8f0;font-size:13px;">
+          <option value="">-- 选择一个预设场景 --</option>
+        </select>
+        <button id="plan-btn-standalone" onclick="planWorkflow()">🧠 生成方案</button>
+      </div>
+      <div class="pipeline-flow" id="pipeline-flow">
+        <div class="pipeline-step ps-input" id="ps-1">① 用户输入</div>
+        <span class="pipeline-arrow">→</span>
+        <div class="pipeline-step ps-done" id="ps-2">② LLM 规划</div>
+        <span class="pipeline-arrow">→</span>
+        <div class="pipeline-step ps-done" id="ps-3">③ 生成 DAG</div>
+        <span class="pipeline-arrow">→</span>
+        <div class="pipeline-step ps-done" id="ps-4">④ Temporal 执行</div>
+        <span class="pipeline-arrow">→</span>
+        <div class="pipeline-step ps-done" id="ps-5">⑤ 结果</div>
+      </div>
+      <div class="plan-status" id="plan-status"></div>
+      <div class="plan-result" id="plan-result">
+        <h4>② LLM 规划结果（Agent 生成的 YAML）</h4>
+        <div class="yaml-preview" id="yaml-preview"></div>
+        <div class="plan-actions">
+          <button class="plan-confirm" onclick="confirmPlan()">③ 确认执行此方案</button>
+          <button class="plan-retry" onclick="planWorkflow()">重新规划</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Preset Mode -->
+  <div id="preset-mode" style="display:none">
+    <div class="tabs" id="tabs"></div>
+  </div>
+
+  <div class="main-grid">
+    <!-- Left: DAG -->
+    <div class="dag-panel">
+      <div class="dag-header">
+        <h3 id="dag-title">选择工作流</h3>
+        <div style="display:flex;gap:8px">
+          <button class="run-btn" id="run-btn" disabled onclick="runWorkflow()">▶ 运行</button>
+          <button class="run-btn" id="fault-btn" style="background:linear-gradient(135deg,#dc2626,#991b1b);display:none" onclick="runFaultDemo()">💥 故障恢复演示</button>
+        </div>
+      </div>
+      <div class="dag-info" id="dag-info">点击上方标签选择场景</div>
+      <div class="dag-canvas" id="dag-canvas">
+        <svg id="dag-svg"></svg>
+        <div class="dag-nodes-container" id="dag-nodes"></div>
+      </div>
+      <div class="legend">
+        <div class="legend-item"><div class="legend-dot" style="background:#7c3aed"></div>LLM</div>
+        <div class="legend-item"><div class="legend-dot" style="background:#0891b2"></div>Tool</div>
+        <div class="legend-item"><div class="legend-dot" style="background:#059669"></div>FlinkSQL</div>
+        <div class="legend-item"><div class="legend-dot" style="background:#d97706"></div>Function</div>
+        <div class="legend-item"><div class="legend-dot" style="background:#dc2626"></div>Condition</div>
+        <div class="legend-item"><div class="legend-dot" style="background:#a855f7"></div>Approval</div>
+        <div class="legend-item" style="margin-left:12px"><div class="legend-dot" style="background:#10b981"></div>完成</div>
+        <div class="legend-item"><div class="legend-dot" style="background:#6b7280"></div>跳过</div>
+      </div>
+    </div>
+
+    <!-- Right: Timeline -->
+    <div class="timeline-panel" id="timeline-panel">
+      <h3>⚡ Agent 执行时间线</h3>
+      <div id="timeline-content">
+        <div class="tl-item">
+          <div class="tl-agent-action">选择并运行一个���作流</div>
+          <div class="tl-detail">执行后这里会按顺序展示��个节点的处理过程，编号与左图对应。</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Approval -->
+<div class="overlay" id="overlay">
+  <div class="approval-card">
+    <h3 id="appr-title"></h3>
+    <div class="desc" id="appr-desc"></div>
+    <div class="ctx" id="appr-ctx"></div>
+    <div class="who" id="appr-who"></div>
+    <div class="approval-btns">
+      <button class="btn-yes" onclick="doApprove('APPROVED')">✓ 批准</button>
+      <button class="btn-no" onclick="doApprove('REJECTED')">✗ 拒绝</button>
+    </div>
+  </div>
+</div>
+
+<script>
+let workflows = [], currentFile = null, wfData = null, runId = null, pollId = null, approvalNodeId = null;
+
+// --- Init ---
+async function init() {
+  const r = await fetch('/api/workflows');
+  workflows = await r.json();
+  document.getElementById('tabs').innerHTML = workflows.map(w =>
+    `<div class="tab" data-f="${w.file}" onclick="selectWf('${w.file}')">${w.name}<span style="color:#6b7280;font-size:10px;margin-left:4px">${w.node_count}</span></div>`
+  ).join('');
+}
+
+async function selectWf(file) {
+  currentFile = file;
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.f === file));
+  const r = await fetch(`/api/workflows/${file}`);
+  wfData = await r.json();
+  renderDAG();
+  document.getElementById('run-btn').disabled = false;
+  document.getElementById('fault-btn').style.display = (file === 'fault_recovery_demo.yaml') ? 'inline-block' : 'none';
+  document.getElementById('timeline-content').innerHTML = `
+    <div class="tl-item">
+      <div class="tl-agent-action">就绪: ${wfData.name}</div>
+      <div class="tl-detail">${file === 'fault_recovery_demo.yaml'
+        ? '点击 💥 故障恢复演示 按钮，观看 Worker 宕机后 Temporal 自动恢复的完整过程。'
+        : '点击 ▶ 运行，Agent 将按编号顺序执行每个节点。<br>编号 = 执行顺序（拓扑排序决定）。'}</div>
+    </div>`;
+}
+
+// --- DAG Rendering ---
+function renderDAG() {
+  const { nodes, edges, execution_order } = wfData;
+  document.getElementById('dag-title').textContent = wfData.name;
+  document.getElementById('dag-info').textContent = `执行顺序: ${execution_order.map((id,i) => `${i+1}.${id}`).join(' → ')}`;
+
+  // Layout
+  const positions = computeLayout(nodes, edges);
+
+  // Nodes
+  const nodesHtml = nodes.map(n => {
+    const pos = positions[n.id];
+    const step = execution_order.indexOf(n.id) + 1;
+    const icon = {LLM:'🤖',Tool:'🔧',FlinkSQL:'🗃️',Function:'⚙️',Condition:'⚡',Approval:'👤'}[n.type]||'📦';
+    const isCondition = n.type === 'Condition';
+    return `<div class="dag-node" data-type="${n.type}" data-id="${n.id}" id="dn-${n.id}"
+                 style="left:${pos.x}px;top:${pos.y}px" onclick="highlightPair('${n.id}')">
+      <span class="step-num">${step}</span>
+      ${isCondition ? '<span class="decision-tag">条件分支</span>' : ''}
+      <div class="node-icon">${icon}</div>
+      <div class="node-id">${n.id}</div>
+      <div class="node-type">${n.type}</div>
+      <div class="node-queue">${n.queue}</div>
+    </div>`;
+  }).join('');
+  document.getElementById('dag-nodes').innerHTML = nodesHtml;
+
+  // Edges (SVG)
+  const canvasH = Math.max(...Object.values(positions).map(p => p.y)) + 100;
+  const canvas = document.getElementById('dag-canvas');
+  canvas.style.minHeight = canvasH + 'px';
+  document.getElementById('dag-nodes').style.minHeight = canvasH + 'px';
+  const svg = document.getElementById('dag-svg');
+  svg.style.height = canvasH + 'px';
+  svg.style.width = '100%';
+
+  setTimeout(() => {
+    let pathsHtml = `<defs>
+      <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto">
+        <path d="M0,0 L10,5 L0,10z" fill="#4b5563"/>
+      </marker>
+      <marker id="ah-g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto">
+        <path d="M0,0 L10,5 L0,10z" fill="#10b981"/>
+      </marker>
+    </defs>`;
+    const NW = 155, NH = 70;
+    edges.forEach(e => {
+      const f = positions[e.from], t = positions[e.to];
+      if (!f || !t) return;
+      const x1 = f.x + NW/2, y1 = f.y + NH;
+      const x2 = t.x + NW/2, y2 = t.y;
+      const my = (y1+y2)/2;
+      pathsHtml += `<path id="edge-${e.from}-${e.to}" d="M${x1},${y1} C${x1},${my} ${x2},${my} ${x2},${y2}" fill="none" stroke="#4b5563" stroke-width="1.5" marker-end="url(#ah)"/>`;
+    });
+    svg.innerHTML = pathsHtml;
+  }, 30);
+}
+
+function computeLayout(nodes, edges) {
+  // Assign layers by longest path from root
+  const incoming = {}, outgoing = {};
+  nodes.forEach(n => { incoming[n.id] = []; outgoing[n.id] = []; });
+  edges.forEach(e => { incoming[e.to].push(e.from); outgoing[e.from].push(e.to); });
+
+  const layers = {};
+  function layer(id) {
+    if (layers[id] !== undefined) return layers[id];
+    if (incoming[id].length === 0) { layers[id] = 0; return 0; }
+    layers[id] = Math.max(...incoming[id].map(p => layer(p))) + 1;
+    return layers[id];
+  }
+  nodes.forEach(n => layer(n.id));
+
+  // Group by layer
+  const groups = {};
+  Object.entries(layers).forEach(([id, l]) => { (groups[l] = groups[l]||[]).push(id); });
+
+  const NW = 155, NH = 70, GX = 30, GY = 95;
+  const containerW = document.getElementById('dag-canvas').offsetWidth - 40;
+  const positions = {};
+
+  Object.keys(groups).sort((a,b)=>a-b).forEach(l => {
+    const g = groups[l];
+    const totalW = g.length * NW + (g.length-1) * GX;
+    const startX = Math.max(10, (containerW - totalW) / 2);
+    g.forEach((id, i) => {
+      positions[id] = { x: startX + i*(NW+GX), y: l*(NH+GY) + 10 };
+    });
+  });
+  return positions;
+}
+
+// --- Highlight pairing ---
+function highlightPair(nodeId) {
+  // Clear all highlights
+  document.querySelectorAll('.dag-node.highlight').forEach(el => el.classList.remove('highlight'));
+  document.querySelectorAll('.tl-item.highlight').forEach(el => el.classList.remove('highlight'));
+  // Highlight DAG node
+  const dn = document.getElementById(`dn-${nodeId}`);
+  if (dn) dn.classList.add('highlight');
+  // Highlight timeline item
+  const tl = document.getElementById(`tl-${nodeId}`);
+  if (tl) { tl.classList.add('highlight'); tl.scrollIntoView({behavior:'smooth', block:'nearest'}); }
+}
+
+// --- Run ---
+async function runWorkflow() {
+  document.getElementById('run-btn').disabled = true;
+  document.querySelectorAll('.dag-node').forEach(el => {
+    el.classList.remove('state-running','state-completed','state-failed','state-skipped','state-waiting');
+  });
+  document.getElementById('timeline-content').innerHTML = '';
+
+  // Add initial agent thought
+  addTimelineInfo('Agent 开始调度', `解析 DAG → 拓扑排序 → 按编号逐节点执行。\n每个节点根据类型发往对应的执行队列。`);
+
+  const r = await fetch(`/api/workflows/${currentFile}/run`, {method:'POST'});
+  const d = await r.json();
+  runId = d.run_id;
+  addTimelineInfo('Temporal Workflow 启动', `ID: ${runId}\n工作流已提交，等待结果...`);
+
+  // Mark first as running
+  setNodeState(wfData.execution_order[0], 'running');
+  pollId = setInterval(poll, 2000);
+}
+
+async function poll() {
+  const r = await fetch(`/api/runs/${runId}`);
+  const d = await r.json();
+
+  if (d.status === 'COMPLETED' || d.status === 'FAILED') {
+    clearInterval(pollId);
+    document.getElementById('run-btn').disabled = false;
+    showResultsAnimated(d.result);
+    return;
+  }
+
+  // Check approvals
+  const ar = await fetch(`/api/runs/${runId}/approvals`);
+  const ad = await ar.json();
+  const pending = ad.pending_approvals || {};
+  const ids = Object.keys(pending);
+  if (ids.length && approvalNodeId !== ids[0]) {
+    approvalNodeId = ids[0];
+    setNodeState(approvalNodeId, 'waiting');
+    showApproval(pending[approvalNodeId]);
+  }
+}
+
+// --- Animated results ---
+async function showResultsAnimated(results) {
+  if (!results) return;
+  document.getElementById('timeline-content').innerHTML = '';
+  let totalMs = 0, totalTokens = 0, completed = 0, skipped = 0;
+
+  for (let i = 0; i < wfData.execution_order.length; i++) {
+    const nodeId = wfData.execution_order[i];
+    const r = results[nodeId];
+    if (!r) continue;
+
+    const node = wfData.nodes.find(n => n.id === nodeId);
+    const step = i + 1;
+    const duration = r.outputs?.duration_ms || r.duration_ms || 0;
+    totalMs += duration;
+    if (r.outputs?.tokens_used) totalTokens += r.outputs.tokens_used;
+    if (r.status === 'COMPLETED') completed++;
+    if (r.status === 'SKIPPED') skipped++;
+
+    // Set DAG node state
+    const state = r.status === 'COMPLETED' ? 'completed' : r.status === 'SKIPPED' ? 'skipped' : 'failed';
+    setNodeState(nodeId, `state-${state}`);
+
+    // Build timeline item
+    const agentAction = getAgentAction(node, r);
+    const detail = getDetail(node, r);
+    const expandContent = getExpandContent(node, r);
+    const statusClass = `tl-status-${r.status.toLowerCase()}`;
+    const typeClass = `type-${node.type.toLowerCase()}`;
+    const numBg = getNumBg(node.type);
+
+    const html = `<div class="tl-item" id="tl-${nodeId}" onclick="toggleExpand(this); highlightPair('${nodeId}')">
+      <div class="tl-num" style="background:${numBg}">${step}</div>
+      <div class="tl-header">
+        <span class="tl-node-name">${nodeId}</span>
+        <span class="tl-type-badge ${typeClass}">${node.type}</span>
+        <span class="tl-status ${statusClass}">${r.status}</span>
+      </div>
+      <div class="tl-agent-action">${agentAction}</div>
+      <div class="tl-detail">${detail}</div>
+      <div class="tl-meta">
+        ${duration ? `<span>⏱ ${duration}ms</span>` : ''}
+        ${r.outputs?.tokens_used ? `<span>🔤 ${r.outputs.tokens_used} tokens</span>` : ''}
+        ${r.outputs?.model ? `<span>🤖 ${r.outputs.model}</span>` : ''}
+        ${node.queue ? `<span>📡 ${node.queue}</span>` : ''}
+      </div>
+      <div class="tl-expand">${expandContent}</div>
+    </div>`;
+
+    document.getElementById('timeline-content').innerHTML += html;
+
+    // Animate: scroll to this item
+    const el = document.getElementById(`tl-${nodeId}`);
+    if (el) el.scrollIntoView({behavior:'smooth', block:'nearest'});
+
+    // Small delay between items for animation effect
+    await sleep(150);
+  }
+
+  // Summary
+  document.getElementById('timeline-content').innerHTML += `
+    <div class="stats-row">
+      <div class="stat-chip">总耗时 <span class="v">${(totalMs/1000).toFixed(1)}s</span></div>
+      <div class="stat-chip">Tokens <span class="v">${totalTokens}</span></div>
+      <div class="stat-chip">完成 <span class="v">${completed}</span></div>
+      <div class="stat-chip">跳过 <span class="v">${skipped}</span></div>
+    </div>`;
+}
+
+function getAgentAction(node, r) {
+  if (r.status === 'SKIPPED') return `⏭ Agent 跳过 — 条件不满足`;
+  switch(node.type) {
+    case 'LLM': return `🤖 Agent → 构造 Prompt → 调用 ${r.outputs?.model||'LLM'} → 收到回答 → 存入上下文`;
+    case 'Condition': return `⚡ 条件分支 → if-else 判断 → 走 "${r.outputs?.branch}" 分支`;
+    case 'Approval': return `👤 Agent 暂停 → 等待人工 → 收到: ${r.outputs?.decision}`;
+    case 'Tool': return `🔧 Agent → 派发工具任务 → ${r.outputs?.tool_id || node.config?.tool_id}`;
+    case 'FlinkSQL': return `🗃️ Agent �� 提交 SQL 到数据队列 → 获得数据集`;
+    case 'Function': return `⚙️ Agent → 调用函数 → ${node.config?.function_id || ''}`;
+    default: return `Agent → 执行节点`;
+  }
+}
+
+function getDetail(node, r) {
+  if (r.status === 'SKIPPED') return `when: "${node.when || '(edge)'}" 不成立，Agent 决定���过`;
+  switch(node.type) {
+    case 'LLM': return `发送 prompt 给 ${r.outputs?.model}，${r.outputs?.tokens_used||0} tokens，${r.outputs?.duration_ms||r.duration_ms||0}ms（点击展开查看完整对话）`;
+    case 'Condition': return `表达式: ${node.config?.expression} → 结果: ${r.outputs?.result} → 分支: ${r.outputs?.branch}`;
+    case 'Approval': return `${r.outputs?.approver} 决策: ${r.outputs?.decision}${r.outputs?.comment ? ' — '+r.outputs.comment : ''}`;
+    case 'Tool': return `执行 ${r.outputs?.tool_id || node.config?.tool_id}，结果: ${JSON.stringify(r.outputs?.result||{}).substring(0,60)}`;
+    case 'FlinkSQL': return `SQL: ${(node.config?.sql||'').substring(0,60)}...`;
+    case 'Function': return `${node.config?.function_id || ''} → ${JSON.stringify(r.outputs?.result||r.outputs||{}).substring(0,60)}`;
+    default: return '';
+  }
+}
+
+function getExpandContent(node, r) {
+  let parts = [];
+  if (r.outputs?.prompt) parts.push(`━━ Prompt（Agent 构造的指令）━━\n${r.outputs.prompt}`);
+  if (r.outputs?.text) parts.push(`━━ LLM 返回（真实 AI 回答）━���\n${r.outputs.text}`);
+  if (r.error) parts.push(`━━ 错误 ━━\n${r.error}`);
+  if (r.outputs?.result && node.type === 'Tool') parts.push(`━━ 工具结果 ━━\n${JSON.stringify(r.outputs.result, null, 2)}`);
+  if (node.when) parts.push(`━━ 条件表达�� ━━\nwhen: ${node.when}`);
+  if (node.config?.expression) parts.push(`━━ 判断表达式 ━━\n${node.config.expression}\n结果: ${r.outputs?.result} → 分支: ${r.outputs?.branch}`);
+  if (parts.length === 0) parts.push(JSON.stringify(r.outputs || {}, null, 2));
+  return esc(parts.join('\n\n'));
+}
+
+function getNumBg(type) {
+  return {LLM:'#7c3aed',Tool:'#0891b2',FlinkSQL:'#059669',Function:'#d97706',Condition:'#dc2626',Approval:'#a855f7'}[type]||'#374151';
+}
+
+// --- Approval ---
+function showApproval(info) {
+  document.getElementById('appr-title').textContent = info.title || '需要审批';
+  document.getElementById('appr-desc').textContent = info.description || '';
+  document.getElementById('appr-ctx').textContent = '(Agent 已暂停工作流，请在查看右侧 Agent 日志后做出决策)';
+  document.getElementById('appr-who').textContent = `审批人: ${(info.approvers||[]).join(', ')}`;
+  document.getElementById('overlay').classList.add('show');
+
+  addTimelineInfo(`⏸ 工作流暂停`, `节点 "${approvalNodeId}" 需要人工审批。\nAgent 发出 Temporal Signal 等待...\n请在弹窗中做出决策。`);
+}
+
+async function doApprove(decision) {
+  document.getElementById('overlay').classList.remove('show');
+  await fetch(`/api/runs/${runId}/approve`, {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ node_id: approvalNodeId, decision, approver:'demo_user', comment: decision==='APPROVED'?'确认执行':'暂不执行' })
+  });
+  setNodeState(approvalNodeId, decision==='APPROVED'?'state-completed':'state-failed');
+  addTimelineInfo(`收到决策: ${decision}`, `Agent 通过 Temporal Signal 恢复工作流继续执行。`);
+  approvalNodeId = null;
+}
+
+// --- Helpers ---
+function setNodeState(id, state) {
+  const el = document.getElementById(`dn-${id}`);
+  if (!el) return;
+  el.classList.remove('state-running','state-completed','state-failed','state-skipped','state-waiting');
+  if (state.startsWith('state-')) el.classList.add(state);
+  else el.classList.add(`state-${state}`);
+}
+
+function toggleExpand(el) { el.classList.toggle('expanded'); }
+
+function addTimelineInfo(title, text) {
+  document.getElementById('timeline-content').innerHTML += `
+    <div class="tl-item" style="border-left:3px solid #f59e0b;background:#1a1708">
+      <div class="tl-agent-action">${title}</div>
+      <div class="tl-detail" style="white-space:pre-line">${esc(text)}</div>
+    </div>`;
+  const panel = document.getElementById('timeline-panel');
+  panel.scrollTop = panel.scrollHeight;
+}
+
+function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// --- Fault Recovery Demo ---
+async function runFaultDemo() {
+  // First load the fault recovery workflow DAG
+  const r = await fetch('/api/workflows/fault_recovery_demo.yaml');
+  if (!r.ok) { alert('fault_recovery_demo.yaml 未找到'); return; }
+  wfData = await r.json();
+  currentFile = 'fault_recovery_demo.yaml';
+  renderDAG();
+
+  document.getElementById('run-btn').disabled = true;
+  document.getElementById('fault-btn').disabled = true;
+  document.getElementById('timeline-content').innerHTML = '';
+
+  addTimelineInfo('🧪 故障恢复演示开始', '演示 Temporal 的核心能力：Worker 宕机后自动恢复。\n流程：启动 → 执行中杀掉 Worker → 重启 → 自动继续');
+
+  const evtSource = new EventSource('/api/fault-recovery-demo');
+
+  evtSource.addEventListener('step', (e) => {
+    const d = JSON.parse(e.data);
+    const phase = d.phase;
+
+    // Update DAG node states based on phase
+    if (phase === 'executing' || phase === 'step1_done') {
+      setNodeState('step1_prepare', 'state-running');
+    }
+    if (phase === 'step1_done') {
+      setNodeState('step1_prepare', 'state-completed');
+      setNodeState('step2_slow_llm', 'state-running');
+    }
+    if (phase === 'crash') {
+      setNodeState('step2_slow_llm', 'state-failed');
+    }
+    if (phase === 'recovering') {
+      setNodeState('step2_slow_llm', 'state-running');
+    }
+    if (phase === 'step2_done') {
+      setNodeState('step2_slow_llm', 'state-completed');
+      setNodeState('step3_save', 'state-running');
+    }
+    if (phase === 'step3_done') {
+      setNodeState('step3_save', 'state-completed');
+    }
+
+    // Style based on phase type
+    let style = 'border-left:3px solid #60a5fa;background:#0c1e2b';
+    if (phase === 'crash' || phase === 'workers_dead') style = 'border-left:3px solid #ef4444;background:#1f0c0c';
+    if (phase === 'restart' || phase === 'workers_restarted') style = 'border-left:3px solid #10b981;background:#0c1f1a';
+    if (phase === 'downtime_start') style = 'border-left:3px solid #f59e0b;background:#1a1708';
+
+    addTimelineRaw(`<div class="tl-item" style="${style}">
+      <div class="tl-agent-action">${esc(d.msg)}</div>
+      ${d.node ? `<div class="tl-detail" style="color:#6b7280">节点: ${d.node}</div>` : ''}
+    </div>`);
+  });
+
+  evtSource.addEventListener('countdown', (e) => {
+    const d = JSON.parse(e.data);
+    const el = document.getElementById('countdown-display');
+    if (el) {
+      el.textContent = d.msg;
+    } else {
+      addTimelineRaw(`<div class="tl-item" style="border-left:3px solid #f59e0b;background:#1a1708">
+        <div class="tl-agent-action" id="countdown-display">${esc(d.msg)}</div>
+        <div class="tl-detail" style="color:#6b7280">Temporal Server 保持状态，等待 Worker 重连...</div>
+      </div>`);
+    }
+  });
+
+  evtSource.addEventListener('complete', (e) => {
+    const d = JSON.parse(e.data);
+    evtSource.close();
+    document.getElementById('run-btn').disabled = false;
+    document.getElementById('fault-btn').disabled = false;
+
+    let resultText = '';
+    if (d.result) {
+      for (const [nid, nr] of Object.entries(d.result)) {
+        const dur = nr.outputs?.duration_ms || nr.duration_ms || 0;
+        const txt = (nr.outputs?.text || '').substring(0, 80);
+        resultText += `${nid}: ${nr.status} (${dur}ms)${txt ? '\n  → ' + txt + '...' : ''}\n`;
+      }
+    }
+
+    addTimelineRaw(`<div class="tl-item" style="border-left:3px solid #10b981;background:#0c1f1a">
+      <div class="tl-agent-action">✅ ${esc(d.msg)}</div>
+      <div class="tl-detail" style="white-space:pre-line;color:#6ee7b7">
+关键结论：
+• step1 在第一轮 Worker 完成 — 不会重复执行
+• step2 被中断后，新 Worker 自动重试并成功
+• step3 正常执行 — 对业务代码完全透明
+• 零故障恢复代码 — 全部由 Temporal 保障</div>
+      <div class="tl-expand" style="display:block">${esc(resultText)}</div>
+      <div class="tl-detail" style="margin-top:8px"><a href="http://192.168.2.60:8088/namespaces/default/workflows/${d.run_id}" target="_blank" style="color:#60a5fa">→ 在 Temporal UI 查看完整事件历史</a></div>
+    </div>`);
+  });
+
+  evtSource.addEventListener('error', (e) => {
+    if (e.data) {
+      const d = JSON.parse(e.data);
+      addTimelineRaw(`<div class="tl-item" style="border-left:3px solid #ef4444;background:#1f0c0c">
+        <div class="tl-agent-action">❌ ${esc(d.msg)}</div>
+      </div>`);
+    }
+    evtSource.close();
+    document.getElementById('run-btn').disabled = false;
+    document.getElementById('fault-btn').disabled = false;
+  });
+}
+
+function addTimelineRaw(html) {
+  document.getElementById('timeline-content').innerHTML += html;
+  const panel = document.getElementById('timeline-panel');
+  panel.scrollTop = panel.scrollHeight;
+}
+
+// --- Mode Switching ---
+function switchMode(mode) {
+  document.querySelectorAll('.mode-tab').forEach((t, i) => {
+    t.classList.toggle('active', (mode === 'agent' && i === 0) || (mode === 'preset' && i === 1));
+  });
+  document.getElementById('agent-mode').style.display = mode === 'agent' ? 'block' : 'none';
+  document.getElementById('preset-mode').style.display = mode === 'preset' ? 'block' : 'none';
+}
+
+// --- Agent Planning ---
+let plannedFile = null;
+
+function setPipelineActive(step) {
+  for (let i = 1; i <= 5; i++) {
+    const el = document.getElementById(`ps-${i}`);
+    el.classList.remove('active');
+    if (i < step) el.className = `pipeline-step ps-${['','input','plan','dag','exec','done'][i]}`;
+    else if (i === step) { el.className = `pipeline-step ps-${['','input','plan','dag','exec','done'][i]} active`; }
+    else el.className = 'pipeline-step ps-done';
+  }
+}
+
+let _isStandalone = false;
+
+async function planWorkflow() {
+  let input, body;
+
+  if (_isStandalone) {
+    const sel = document.getElementById('plan-template-select');
+    if (!sel.value) { alert('请选择一个场景'); return; }
+    input = sel.options[sel.selectedIndex].text;
+    body = { template_id: sel.value };
+  } else {
+    input = document.getElementById('user-input').value.trim();
+    if (!input) { alert('请输入需求'); return; }
+    body = { input };
+  }
+
+  const btn = document.getElementById(_isStandalone ? 'plan-btn-standalone' : 'plan-btn');
+  btn.disabled = true;
+  document.getElementById('plan-status').textContent = _isStandalone
+    ? '⚡ 生成预设方案...'
+    : '🧠 Agent 正在调用 LLM 规划工作流...';
+  document.getElementById('plan-result').style.display = 'none';
+  setPipelineActive(2);
+
+  // Clear right panel
+  document.getElementById('timeline-content').innerHTML = '';
+  addTimelineInfo('① 选择场景', input);
+  addTimelineInfo(_isStandalone ? '② 加载预设方案' : '② Agent 调用 LLM 规划',
+    _isStandalone
+      ? `从预设模板生成 DAG 工作流...\n场景: ${input}`
+      : `将需求发送给 Qwen-Plus，让 AI 分解为 DAG 工作流...\n\nSystem Prompt: 你是工作流规划 Agent...\nUser: ${input}`
+  );
+
+  try {
+    const r = await fetch('/api/plan-workflow', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body)
+    });
+    const d = await r.json();
+
+    btn.disabled = false;
+
+    if (!d.success) {
+      document.getElementById('plan-status').textContent = `❌ 规划失败: ${d.error}`;
+      addTimelineInfo('❌ 规划失败', `${d.error}\n\nLLM 原始输出:\n${d.raw_yaml}`);
+      return;
+    }
+
+    // Show plan result
+    setPipelineActive(3);
+    document.getElementById('plan-status').textContent = `✓ 规划完成 (${d.tokens_used} tokens) — ${d.nodes.length} 个节点`;
+    document.getElementById('yaml-preview').textContent = d.raw_yaml;
+    document.getElementById('plan-result').style.display = 'block';
+    plannedFile = d.filename;
+
+    // Load into DAG view
+    wfData = d;
+    currentFile = d.filename;
+    renderDAG();
+
+    addTimelineInfo('✓ LLM 规划完成', `生成了 ${d.nodes.length} 个节点的 DAG：\n${d.execution_order.map((id,i) => `  ${i+1}. ${id}`).join('\n')}\n\n等待用户确认后执行...`);
+
+  } catch(e) {
+    document.getElementById('plan-btn').disabled = false;
+    document.getElementById('plan-status').textContent = `❌ 网络错误: ${e.message}`;
+  }
+}
+
+async function confirmPlan() {
+  if (!plannedFile) return;
+  setPipelineActive(4);
+  document.getElementById('plan-status').textContent = '④ 提交 Temporal 执行...';
+  addTimelineInfo('③ 用户确认执行', 'DAG 方案确认，提交 Temporal 调度执行...');
+
+  // Use the normal run flow
+  currentFile = plannedFile;
+  await runWorkflow();
+  setPipelineActive(5);
+}
+
+// --- Init (load presets for preset mode) ---
+async function loadPresets() {
+  const r = await fetch('/api/workflows');
+  workflows = await r.json();
+  document.getElementById('tabs').innerHTML = workflows.map(w =>
+    `<div class="tab" data-f="${w.file}" onclick="selectWf('${w.file}')">${w.name}<span style="color:#6b7280;font-size:10px;margin-left:4px">${w.node_count}</span></div>`
+  ).join('');
+}
+
+// Load config and update badges
+async function loadConfig() {
+  try {
+    const r = await fetch('/api/config');
+    const cfg = await r.json();
+    _isStandalone = cfg.standalone;
+    const tBadge = document.getElementById('badge-temporal');
+    const lBadge = document.getElementById('badge-llm');
+    if (cfg.standalone) {
+      tBadge.textContent = '⚡ 单机模式';
+      tBadge.className = 'badge badge-blue';
+      lBadge.textContent = '⚡ Mock LLM';
+      lBadge.className = 'badge badge-blue';
+
+      // Switch to dropdown mode
+      document.getElementById('agent-input-full').style.display = 'none';
+      document.getElementById('agent-input-standalone').style.display = 'flex';
+      document.getElementById('agent-input-title').textContent = '① 选择预设场景';
+      document.getElementById('agent-input-desc').textContent = '单机模式无 LLM，请从预设场景中选择一个方案，查看 Agent 如何将其编排为 DAG 并执行。';
+
+      // Load templates
+      const tr = await fetch('/api/plan-templates');
+      const templates = await tr.json();
+      const sel = document.getElementById('plan-template-select');
+      templates.forEach(t => {
+        const opt = document.createElement('option');
+        opt.value = t.id;
+        opt.textContent = t.label;
+        sel.appendChild(opt);
+      });
+    } else {
+      tBadge.textContent = '✓ Temporal';
+      lBadge.textContent = '✓ ' + (cfg.llm_model || 'Qwen-Plus');
+    }
+    // Always pre-fill settings fields with current values
+    document.getElementById('cfg-temporal').value = cfg.temporal_address || '';
+    document.getElementById('cfg-base-url').value = cfg.qwen_base_url || '';
+    document.getElementById('cfg-model').value = cfg.llm_model === 'mock' ? 'qwen-plus' : (cfg.llm_model || '');
+    document.getElementById('cfg-api-key').setAttribute('placeholder', cfg.qwen_api_key_masked || 'sk-xxxxxxxxxx');
+  } catch(e) {}
+}
+
+// --- Settings Modal ---
+function openSettings() {
+  const modal = document.getElementById('settings-modal');
+  modal.style.display = 'flex';
+  document.getElementById('cfg-error').style.display = 'none';
+  document.getElementById('cfg-success').style.display = 'none';
+  // Set current mode
+  if (_isStandalone) {
+    document.getElementById('cfg-mode-standalone').checked = true;
+  } else {
+    document.getElementById('cfg-mode-full').checked = true;
+  }
+  toggleConfigFields();
+}
+
+function closeSettings() {
+  document.getElementById('settings-modal').style.display = 'none';
+}
+
+function toggleConfigFields() {
+  const full = document.getElementById('cfg-mode-full').checked;
+  document.getElementById('cfg-full-fields').style.display = full ? 'block' : 'none';
+}
+
+async function applySettings() {
+  const mode = document.querySelector('input[name="cfg-mode"]:checked').value;
+  const errEl = document.getElementById('cfg-error');
+  const sucEl = document.getElementById('cfg-success');
+  const btn = document.getElementById('cfg-apply-btn');
+  errEl.style.display = 'none';
+  sucEl.style.display = 'none';
+  btn.disabled = true;
+  btn.textContent = '连接中...';
+
+  let body = { mode };
+  if (mode === 'full') {
+    body.temporal_address = document.getElementById('cfg-temporal').value.trim();
+    body.qwen_api_key = document.getElementById('cfg-api-key').value.trim();
+    body.qwen_base_url = document.getElementById('cfg-base-url').value.trim();
+    body.qwen_model = document.getElementById('cfg-model').value.trim();
+  }
+
+  try {
+    const r = await fetch('/api/config', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body),
+    });
+    const d = await r.json();
+    btn.disabled = false;
+    btn.textContent = '应用';
+
+    if (d.success) {
+      sucEl.textContent = mode === 'standalone' ? '✓ 已切换为单机模式' : '✓ 已切换为完整模式，连接验证通过';
+      sucEl.style.display = 'block';
+      setTimeout(() => {
+        closeSettings();
+        location.reload();
+      }, 1000);
+    } else {
+      errEl.innerHTML = (d.errors || []).join('<br>');
+      errEl.style.display = 'block';
+    }
+  } catch(e) {
+    btn.disabled = false;
+    btn.textContent = '应用';
+    errEl.textContent = '请求失败: ' + e.message;
+    errEl.style.display = 'block';
+  }
+}
+
+// Close modal on backdrop click
+document.getElementById('settings-modal').addEventListener('click', function(e) {
+  if (e.target === this) closeSettings();
+});
+
+init();
+loadPresets();
+loadConfig();
+</script>
+</body>
+</html>

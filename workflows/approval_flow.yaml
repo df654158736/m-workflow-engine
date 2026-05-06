@@ -1,0 +1,44 @@
+# 人机交互示例 — LLM 分析 → 人工审批 → 条件执行
+# 展示 Temporal Signal 实现 workflow 暂停等人
+
+workflow_id: wf-approval-demo
+name: "人工审批 Pipeline"
+
+nodes:
+  - id: analyze
+    type: LLM
+    config:
+      prompt: "分析供应商风险，评估是否需要拉黑。请给出风险评级(高/中/低)和具体原因。"
+      model: qwen-plus
+
+  - id: human_review
+    type: Approval
+    config:
+      title: "供应商风险审批"
+      description: "LLM 判定该供应商存在高风险，请审批是否拉黑"
+      approvers: ["risk_manager", "compliance_officer"]
+    inputs:
+      analysis: "${analyze.outputs.text}"
+
+  - id: blacklist
+    type: Tool
+    config:
+      tool_id: act-supplier-blacklist
+      args:
+        action: "blacklist"
+        reason: "risk approved by human"
+    when: "human_review.get('decision') == 'APPROVED'"
+
+  - id: notify_pass
+    type: Function
+    config:
+      function_id: fn-send-notification
+    when: "human_review.get('decision') == 'REJECTED'"
+
+edges:
+  - from: analyze
+    to: human_review
+  - from: human_review
+    to: blacklist
+  - from: human_review
+    to: notify_pass

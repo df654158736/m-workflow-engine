@@ -1,0 +1,66 @@
+# Sample: 数据编织 + LLM 分析 + 条件分支 + 本体写入
+# 展示跨 4 个 Plane (B/C/D/E) 的混合工作流
+
+workflow_id: wf-supplier-quality-check
+name: "供应商质量检查 Pipeline"
+
+nodes:
+  - id: extract_data
+    type: FlinkSQL
+    config:
+      sql: "SELECT * FROM erp_source.suppliers WHERE quality_score < 80"
+      sink: bronze.supplier_low_quality
+
+  - id: clean_data
+    type: Function
+    config:
+      function_id: fn-supplier-data-clean
+    inputs:
+      dataset: "${extract_data.outputs.dataset_ref}"
+
+  - id: analyze_risk
+    type: LLM
+    config:
+      prompt: "根据供应商的质量评分和交付历史，分析其风险等级。如果风险高请说明原因，用中文回答。"
+      model: qwen-plus
+    inputs:
+      data: "${clean_data.outputs.result}"
+
+  - id: check_anomaly
+    type: Condition
+    config:
+      expression: "confidence > 0.85"
+      true_branch: "high_confidence"
+      false_branch: "low_confidence"
+    inputs:
+      confidence: "${analyze_risk.outputs.confidence}"
+
+  - id: write_ontology
+    type: Tool
+    config:
+      tool_id: act-supplier-risk-label
+      args:
+        label: "HIGH_RISK"
+        action: "create_alert"
+    inputs:
+      analysis: "${analyze_risk.outputs.text}"
+    when: "check_anomaly.get('branch') == 'high_confidence'"
+
+  - id: load_silver
+    type: FlinkSQL
+    config:
+      sql: "INSERT INTO silver.supplier_risk SELECT * FROM ${dataset} WHERE risk_level = 'HIGH'"
+    inputs:
+      dataset: "${extract_data.outputs.dataset_ref}"
+
+edges:
+  - from: extract_data
+    to: clean_data
+  - from: clean_data
+    to: analyze_risk
+  - from: analyze_risk
+    to: check_anomaly
+  - from: check_anomaly
+    to: write_ontology
+  - from: check_anomaly
+    to: load_silver

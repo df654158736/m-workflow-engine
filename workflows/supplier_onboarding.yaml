@@ -1,0 +1,103 @@
+# 场景：新供应商准入全流程
+# 展示 Agent 如何串联：数据采集 → AI 分析 → 条件分支 → 人工审批 → 系统执行
+# Agent 决策点：风险评级决定走快速通道还是人工审核
+
+workflow_id: wf-supplier-onboarding
+name: "新供应商准入评估"
+
+nodes:
+  - id: fetch_company_info
+    type: FlinkSQL
+    config:
+      sql: "SELECT company_name, reg_capital, establishment_date, credit_score FROM external_api.enterprise_info WHERE company_id = :id"
+      sink: bronze.supplier_candidates
+      description: "从企查查/天眼查拉取企业工商信息"
+
+  - id: fetch_history
+    type: Function
+    config:
+      function_id: fn-query-cooperation-history
+      description: "查询历史合作记录（交付准时率、质量合格率、投诉次数）"
+    inputs:
+      company_ref: "${fetch_company_info.outputs.dataset_ref}"
+
+  - id: ai_risk_assessment
+    type: LLM
+    config:
+      prompt: "你是供应商风险评估专家。根据以下企业信息和历史数据，给出综合风险评级和准入建议。\n\n要求：\n1. 风险评级：高/中/低\n2. 具体风险点（列出1-3个）\n3. 准入建议：通过/需人工复核/拒绝\n4. confidence 分数(0-1)\n\n请用JSON格式返回。"
+      model: qwen-plus
+      system_prompt: "你是供应链风险管理AI助手，擅长分析企业征信数据和合作历史，判断供应商准入风险。"
+      temperature: 0.3
+    inputs:
+      company_info: "${fetch_company_info.outputs.dataset_ref}"
+      history: "${fetch_history.outputs.result}"
+
+  - id: risk_routing
+    type: Condition
+    config:
+      expression: "confidence >= 0.85"
+      true_branch: "auto_approve"
+      false_branch: "manual_review"
+      description: "Agent 决策：AI 置信度 ≥ 85% 走自动通道，否则转人工"
+    inputs:
+      confidence: "${ai_risk_assessment.outputs.confidence}"
+
+  - id: human_review
+    type: Approval
+    config:
+      title: "供应商准入人工复核"
+      description: "AI 评估置信度不足，需要采购经理人工复核。请查看AI分析报告后决定。"
+      approvers: ["procurement_manager", "risk_controller"]
+    inputs:
+      ai_analysis: "${ai_risk_assessment.outputs.text}"
+    when: "risk_routing.get('branch') == 'manual_review'"
+
+  - id: create_supplier
+    type: Tool
+    config:
+      tool_id: act-create-supplier-entity
+      args:
+        status: "APPROVED"
+        source: "auto_onboarding"
+      description: "在本体中创建供应商实体，写入知识图谱"
+    inputs:
+      analysis: "${ai_risk_assessment.outputs.text}"
+    when: "risk_routing.get('branch') == 'auto_approve' or human_review.get('decision') == 'APPROVED'"
+
+  - id: send_welcome
+    type: Function
+    config:
+      function_id: fn-send-notification
+      description: "发送准入通知邮件给供应商联系人"
+    inputs:
+      supplier_ref: "${create_supplier.outputs.result}"
+    when: "risk_routing.get('branch') == 'auto_approve' or human_review.get('decision') == 'APPROVED'"
+
+  - id: reject_notify
+    type: Function
+    config:
+      function_id: fn-send-rejection
+      description: "发送拒绝通知，说明原因"
+    inputs:
+      reason: "${ai_risk_assessment.outputs.text}"
+    when: "human_review.get('decision') == 'REJECTED'"
+
+edges:
+  - from: fetch_company_info
+    to: fetch_history
+  - from: fetch_company_info
+    to: ai_risk_assessment
+  - from: fetch_history
+    to: ai_risk_assessment
+  - from: ai_risk_assessment
+    to: risk_routing
+  - from: risk_routing
+    to: human_review
+  - from: risk_routing
+    to: create_supplier
+  - from: human_review
+    to: create_supplier
+  - from: human_review
+    to: reject_notify
+  - from: create_supplier
+    to: send_welcome
