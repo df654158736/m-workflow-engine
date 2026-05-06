@@ -98,7 +98,6 @@ app.add_middleware(
 # Global state
 _client: Any = None
 _workers_started = False
-_execution_logs: dict[str, list[dict]] = {}
 _standalone_runs: dict[str, dict] = {}
 
 
@@ -149,27 +148,13 @@ async def startup():
 # --- API Routes ---
 
 _llm_client: Any = None
+_planning_agent: Any = None
 if not STANDALONE_MODE:
     _llm_client = AsyncOpenAI(api_key=QWEN_API_KEY, base_url=QWEN_BASE_URL)
-
-PLANNER_SYSTEM_PROMPT = """你是一个工作流规划 Agent。用户会给你一个业务需求，你需要将其分解为一个 DAG 工作流。
-
-可用的节点类型：
-- LLM: 调用大语言模型做分析/推理/生成。config 需要 prompt 和 model(固定用 qwen-plus)。
-- Tool: 执行系统操作（写入数据库/调用外部API/发通知等）。config 需要 tool_id 和 args。
-- FlinkSQL: 执行数据查询/ETL。config 需要 sql 和 sink。
-- Function: 调用自定义函数做数据处理。config 需要 function_id。
-- Condition: 条件判断分支。config 需要 expression、true_branch、false_branch。
-- Approval: 人工审批节点，工作流会暂停等人决策。config 需要 title、description、approvers。
-
-节点间数据传递用 ${node_id.outputs.field} 语法。
-条件执行用 when 字段（Python 表达式）。
-
-请输出严格的 YAML 格式，包含 workflow_id、name、nodes 和 edges。
-每个 node 必须有 id、type、config。
-edges 定义 from 和 to。
-
-重要：只输出 YAML 内容，不要输出其他文字。不要用 markdown 代码块包裹。"""
+    # Initialize Planning Agent
+    import backend.agent.tools  # noqa: F401 — 导入即注册所有 tools
+    from backend.agent.planner import PlanningAgent
+    _planning_agent = PlanningAgent(llm_client=_llm_client, model=QWEN_MODEL)
 
 
 STANDALONE_PLAN_TEMPLATES: dict[str, dict[str, str]] = {
@@ -420,7 +405,7 @@ async def list_plan_templates():
 
 @app.post("/api/plan-workflow")
 async def plan_workflow(payload: dict[str, Any]):
-    """Use LLM to plan a workflow from natural language input."""
+    """Use Planning Agent (ReAct Loop) to generate a validated DAG workflow."""
     user_input = payload.get("input", "")
     template_id = payload.get("template_id", "")
 
@@ -434,52 +419,38 @@ async def plan_workflow(payload: dict[str, Any]):
         await asyncio.sleep(0.5)
         uid = uuid.uuid4().hex[:6]
         yaml_text = tpl["yaml"].format(uid=uid)
-    else:
-        if not user_input:
-            raise HTTPException(400, "input is required")
-        response = await _llm_client.chat.completions.create(
-            model=QWEN_MODEL,
-            messages=[
-                {"role": "system", "content": PLANNER_SYSTEM_PROMPT},
-                {"role": "user", "content": user_input},
-            ],
-            temperature=0.3,
-            max_tokens=2048,
-        )
-        yaml_text = response.choices[0].message.content or ""
-    # Clean up: remove markdown code fences if present
-    yaml_text = yaml_text.strip()
-    if yaml_text.startswith("```"):
-        lines = yaml_text.split("\n")
-        lines = [l for l in lines if not l.strip().startswith("```")]
-        yaml_text = "\n".join(lines)
+        return await _parse_and_save_yaml(yaml_text, iterations=0, tool_calls=[])
 
-    # Try to parse it
-    tokens_used = 0
-    if not STANDALONE_MODE and response.usage:
-        tokens_used = response.usage.total_tokens
+    # Full mode: use Planning Agent (ReAct Loop)
+    if not user_input:
+        raise HTTPException(400, "input is required")
 
-    import yaml as _yaml
-    try:
-        parsed = _yaml.safe_load(yaml_text)
-    except Exception as e:
+    if not _planning_agent:
+        raise HTTPException(500, "Planning Agent not initialized (check LLM config)")
+
+    plan_result = await _planning_agent.plan(user_input)
+
+    if not plan_result.success:
         return {
             "success": False,
-            "error": f"YAML 解析失败: {str(e)}",
-            "raw_yaml": yaml_text,
-            "tokens_used": tokens_used,
+            "error": "; ".join(plan_result.errors) or "规划失败",
+            "raw_yaml": plan_result.yaml_text,
+            "iterations": plan_result.iterations,
+            "tool_calls": plan_result.tool_calls_log,
+            "thinking": plan_result.thinking_log,
         }
 
-    if not parsed or "nodes" not in parsed:
-        return {
-            "success": False,
-            "error": "LLM 返回的 YAML 缺少 nodes 定义",
-            "raw_yaml": yaml_text,
-            "tokens_used": tokens_used,
-        }
+    return await _parse_and_save_yaml(
+        plan_result.yaml_text,
+        iterations=plan_result.iterations,
+        tool_calls=plan_result.tool_calls_log,
+    )
 
-    # Save to temp file and parse with our DSL parser
+
+async def _parse_and_save_yaml(yaml_text: str, iterations: int, tool_calls: list) -> dict:
+    """Parse validated YAML, save to file, return DAG structure."""
     import tempfile
+
     tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False, dir=str(WORKFLOWS_DIR))
     tmp.write(yaml_text)
     tmp.close()
@@ -504,7 +475,6 @@ async def plan_workflow(payload: dict[str, Any]):
             })
         edges = [{"from": e.from_node, "to": e.to_node} for e in defn.edges]
 
-        # Keep the file for execution
         generated_filename = f"_generated_{uuid.uuid4().hex[:6]}.yaml"
         final_path = WORKFLOWS_DIR / generated_filename
         os.rename(tmp.name, str(final_path))
@@ -519,7 +489,8 @@ async def plan_workflow(payload: dict[str, Any]):
             "edges": edges,
             "execution_order": order,
             "errors": errors,
-            "tokens_used": tokens_used,
+            "iterations": iterations,
+            "tool_calls": tool_calls,
         }
     except Exception as e:
         os.unlink(tmp.name)
@@ -527,7 +498,8 @@ async def plan_workflow(payload: dict[str, Any]):
             "success": False,
             "error": f"DSL 解析失败: {str(e)}",
             "raw_yaml": yaml_text,
-            "tokens_used": tokens_used,
+            "iterations": iterations,
+            "tool_calls": tool_calls,
         }
 
 
@@ -811,7 +783,7 @@ async def get_config():
 async def update_config(payload: dict[str, Any]):
     """Switch between standalone and full mode at runtime."""
     global STANDALONE_MODE, TEMPORAL_ADDRESS, QWEN_API_KEY, QWEN_BASE_URL, QWEN_MODEL
-    global _client, _llm_client, _workers_started
+    global _client, _llm_client, _planning_agent, _workers_started
 
     mode = payload.get("mode")  # "standalone" or "full"
     if mode not in ("standalone", "full"):
@@ -869,6 +841,10 @@ async def update_config(payload: dict[str, Any]):
     STANDALONE_MODE = False
     _workers_started = False
     await ensure_workers()
+    # Reinitialize Planning Agent with new LLM client
+    import backend.agent.tools  # noqa: F401
+    from backend.agent.planner import PlanningAgent
+    _planning_agent = PlanningAgent(llm_client=_llm_client, model=QWEN_MODEL)
     _save_config()
     logger.info("Switched to FULL mode", temporal=TEMPORAL_ADDRESS, model=QWEN_MODEL)
     return {"success": True, "standalone": False}
