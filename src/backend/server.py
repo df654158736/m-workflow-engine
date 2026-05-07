@@ -503,6 +503,30 @@ async def _parse_and_save_yaml(yaml_text: str, iterations: int, tool_calls: list
         }
 
 
+@app.post("/api/datafirst")
+async def datafirst_agent(payload: dict[str, Any]):
+    """Data-First Agent: 自然语言驱动的数据接入全流程。"""
+    user_input = payload.get("input", "")
+    if not user_input:
+        raise HTTPException(400, "input is required")
+
+    if STANDALONE_MODE:
+        raise HTTPException(400, "datafirst 模式需要 LLM，不支持 standalone 模式")
+
+    if not _planning_agent:
+        raise HTTPException(500, "Planning Agent not initialized (check LLM config)")
+
+    plan_result = await _planning_agent.plan(user_input, mode="datafirst")
+
+    return {
+        "success": plan_result.success,
+        "response": plan_result.yaml_text if plan_result.success else "",
+        "error": "; ".join(plan_result.errors) if plan_result.errors else "",
+        "iterations": plan_result.iterations,
+        "tool_calls": plan_result.tool_calls_log,
+    }
+
+
 @app.get("/api/workflows")
 async def list_workflows():
     """List available workflow YAML files."""

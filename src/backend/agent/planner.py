@@ -89,6 +89,69 @@ edges:
 {skills_context}
 """
 
+DATAFIRST_TOOLS = {
+    "list_datasources",
+    "scan_table_columns",
+    "list_object_types",
+    "create_object_type",
+    "ai_infer_properties",
+    "create_fabric_task",
+    "trigger_ai_analysis",
+    "get_field_mappings",
+    "generate_pipeline",
+}
+
+DATAFIRST_PROMPT_TEMPLATE = """你是一个数据接入助手 Agent。用户用自然语言描述数据接入需求，你通过调用工具完成全流程。
+
+## 你的能力
+
+你可以调用以下工具完成数据接入的完整流程：
+
+### 查询类工具
+- `list_datasources` — 列出已有数据源（ID、名称、类型、状态）
+- `scan_table_columns` — 扫描表的列元数据（列名、类型、主键）
+- `list_object_types` — 列出已有 ObjectType（避免重复创建）
+
+### 本体操作工具
+- `ai_infer_properties` — AI 根据表列推荐 ObjectType 属性
+- `create_object_type` — 创建 ObjectType（⚠️ 写操作，需用户确认）
+
+### 数据编织工具
+- `create_fabric_task` — 创建数据编织任务（⚠️ 写操作，需用户确认）
+- `trigger_ai_analysis` — 触发 AI 语义分析，返回候选对象
+- `get_field_mappings` — 获取/生成字段映射建议
+- `generate_pipeline` — 生成 Pipeline DSL
+
+## ⚠️ 标准流程（严格按此顺序）
+
+1. **查数据源** → `list_datasources` 找到目标数据源
+2. **扫描表结构** → `scan_table_columns` 获取列信息
+3. **检查已有本体** → `list_object_types` 避免重复
+4. **设计本体** → 可选用 `ai_infer_properties`，或根据表列自行设计
+5. **向用户展示方案** → 列出推荐的 ObjectType 名称和属性，等待用户确认
+6. **创建 ObjectType** → 用户确认后调用 `create_object_type`
+7. **创建编织任务** → `create_fabric_task`
+8. **AI 分析** → `trigger_ai_analysis`
+9. **字段映射** → `get_field_mappings`
+10. **生成 Pipeline** → `generate_pipeline`，展示 DSL 给用户
+
+## 关键规则
+
+1. **写操作必须确认** — 创建 ObjectType、创建编织任务前，必须向用户展示方案并等待确认。直接在回复中展示方案即可。
+2. **渐进式推进** — 每步完成后汇报结果，等用户确认再继续下一步
+3. **错误恢复** — API 报错时，向用户说明原因并给出替代方案
+4. **已有资源复用** — 操作前先查询已有资源，避免重复创建
+
+## 回复风格
+
+- 简洁明了，不要长篇大论
+- 展示工具调用的关键结果，不要原样输出 JSON
+- 方案展示用表格格式（属性名、类型、说明）
+- 每步完成后，告诉用户下一步是什么
+
+{skills_context}
+"""
+
 
 @dataclass
 class PlanResult:
@@ -120,11 +183,15 @@ class PlanningAgent:
         self.max_iterations = max_iterations
         self._nudge_threshold = 3
 
-    async def plan(self, user_input: str) -> PlanResult:
-        """执行 ReAct 循环规划工作流。"""
+    async def plan(self, user_input: str, mode: str = "workflow") -> PlanResult:
+        """执行 ReAct 循环规划工作流。
+
+        mode: "workflow" = 生成工作流 YAML, "datafirst" = 数据接入全流程
+        """
         # 1. 加载相关 Skills
         skills_context = self.skills.load_relevant(user_input)
-        system_prompt = SYSTEM_PROMPT_TEMPLATE.format(
+        template = DATAFIRST_PROMPT_TEMPLATE if mode == "datafirst" else SYSTEM_PROMPT_TEMPLATE
+        system_prompt = template.format(
             skills_context=f"\n## 领域知识\n\n{skills_context}" if skills_context else ""
         )
 
@@ -140,30 +207,61 @@ class PlanningAgent:
         messages.append({"role": "user", "content": user_input})
 
         result = PlanResult(success=False)
-        tool_schemas = self.tools.schemas() or None
+        if mode == "datafirst":
+            tool_schemas = self.tools.schemas(only=DATAFIRST_TOOLS) or None
+        else:
+            tool_schemas = self.tools.schemas() or None
 
         # 4. ReAct Loop
         for iteration in range(self.max_iterations):
             result.iterations = iteration + 1
             logger.info(f"Planning iteration {iteration + 1}/{self.max_iterations}")
 
-            response = await self.llm.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                tools=tool_schemas,
-                temperature=0.2,
-                max_tokens=4096,
-            )
+            try:
+                response = await self.llm.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    tools=tool_schemas,
+                    temperature=0.2,
+                    max_tokens=4096,
+                )
+            except Exception as e:
+                logger.warning(f"LLM call failed: {e}")
+                result.errors = [f"LLM 调用失败: {str(e)}"]
+                return result
 
             choice = response.choices[0]
             message = choice.message
 
             # Case A: LLM 调用工具
             if message.tool_calls:
-                messages.append(message.model_dump())
+                msg_dict = message.model_dump()
+                for tc in msg_dict.get("tool_calls", []):
+                    args_str = tc.get("function", {}).get("arguments", "")
+                    try:
+                        json.loads(args_str)
+                    except (json.JSONDecodeError, TypeError):
+                        tc["function"]["arguments"] = "{}"
+                messages.append(msg_dict)
                 for tool_call in message.tool_calls:
                     fn_name = tool_call.function.name
-                    fn_args = json.loads(tool_call.function.arguments)
+                    try:
+                        fn_args = json.loads(tool_call.function.arguments)
+                    except json.JSONDecodeError:
+                        logger.warning(f"Invalid JSON in tool_call args for {fn_name}")
+                        tool_result = {"error": f"参数 JSON 格式错误，请重新调用 {fn_name}，确保参数是合法 JSON"}
+                        result.tool_calls_log.append({
+                            "iteration": iteration + 1,
+                            "tool": fn_name,
+                            "args": {"_raw": tool_call.function.arguments[:200]},
+                            "result": tool_result,
+                        })
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "content": json.dumps(tool_result, ensure_ascii=False),
+                        })
+                        continue
 
                     logger.info(f"Agent calling tool: {fn_name}", args=fn_args)
                     tool_result = await self.tools.execute(fn_name, fn_args)
@@ -181,7 +279,7 @@ class PlanningAgent:
                         "content": json.dumps(tool_result, ensure_ascii=False),
                     })
 
-                if iteration + 1 >= self._nudge_threshold:
+                if mode != "datafirst" and iteration + 1 >= self._nudge_threshold:
                     messages.append({
                         "role": "user",
                         "content": "你已经用了多轮来查询信息。请立即根据已有信息生成完整的 YAML 工作流，用 ```yaml 代码块输出。",
@@ -192,6 +290,15 @@ class PlanningAgent:
             content = message.content or ""
             messages.append({"role": "assistant", "content": content})
             result.thinking_log.append(content)
+
+            # datafirst 模式：Agent 输出文本即为最终回复
+            if mode == "datafirst":
+                if choice.finish_reason == "stop":
+                    result.success = True
+                    result.yaml_text = content
+                    logger.info("Datafirst response complete", iterations=iteration + 1)
+                    return result
+                continue
 
             yaml_text = self._extract_yaml(content)
             if not yaml_text and iteration + 1 >= self._nudge_threshold:

@@ -35,10 +35,15 @@ class ToolRegistry:
     def list_names(self) -> list[str]:
         return list(self._tools.keys())
 
-    def schemas(self) -> list[dict]:
-        """返回 OpenAI function calling 格式的 tools schema。"""
+    def schemas(self, only: set[str] | None = None) -> list[dict]:
+        """返回 OpenAI function calling 格式的 tools schema。
+
+        only: 若提供，只返回指定名称的 Tool schema。
+        """
         result = []
         for t in self._tools.values():
+            if only and t.name not in only:
+                continue
             result.append({
                 "type": "function",
                 "function": {

@@ -1,6 +1,6 @@
-mode: standalone
+mode: full
 temporal:
-  address: localhost:7233
+  address: 192.168.2.60:7233
   namespace: default
 llm:
   api_key: your-api-key-here
@@ -9,3 +9,8 @@ llm:
 server:
   host: 0.0.0.0
   port: 8686
+web_app:
+  base_url: http://127.0.0.1:6682
+  project_id: your-project-id
+  world_id: your-world-id
+  auth_token: admin-mock-token
