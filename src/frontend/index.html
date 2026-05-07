@@ -299,6 +299,81 @@ body {
   border-radius: 6px; color: #94a3b8; cursor: pointer; font-size: 12px;
 }
 .mode-tab.active { background: #1e3a5f; border-color: #3b82f6; color: #93c5fd; font-weight: 600; }
+
+/* Data-First Chat UI */
+#datafirst-mode { display: none; }
+.chat-container {
+  display: flex; flex-direction: column; height: calc(100vh - 160px);
+  background: #111827; border: 1px solid #1f2937; border-radius: 10px; overflow: hidden;
+}
+.chat-header {
+  padding: 12px 16px; background: #1e293b; border-bottom: 1px solid #2d3748;
+  display: flex; align-items: center; justify-content: space-between;
+}
+.chat-header h3 { font-size: 14px; color: #60a5fa; margin: 0; }
+.chat-header .chat-status { font-size: 11px; color: #6b7280; }
+.chat-messages {
+  flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px;
+}
+.chat-msg {
+  max-width: 85%; padding: 10px 14px; border-radius: 10px; font-size: 13px; line-height: 1.6;
+  word-break: break-word;
+}
+.chat-msg.user {
+  align-self: flex-end; background: #1e3a5f; color: #93c5fd; border-bottom-right-radius: 2px;
+}
+.chat-msg.agent {
+  align-self: flex-start; background: #1f2937; color: #e2e8f0; border-bottom-left-radius: 2px;
+}
+.chat-msg.agent table { width: 100%; border-collapse: collapse; margin: 8px 0; font-size: 12px; }
+.chat-msg.agent th { background: #374151; color: #93c5fd; padding: 6px 8px; text-align: left; border: 1px solid #4b5563; }
+.chat-msg.agent td { padding: 5px 8px; border: 1px solid #374151; color: #d1d5db; }
+.chat-msg.agent tr:hover td { background: #1e293b; }
+.chat-msg.agent code { background: #0f172a; padding: 1px 4px; border-radius: 3px; color: #67e8f9; font-size: 12px; }
+.chat-msg.agent pre { background: #0f172a; padding: 10px; border-radius: 6px; overflow-x: auto; margin: 8px 0; }
+.chat-msg.agent pre code { background: none; padding: 0; }
+.chat-msg.agent h2, .chat-msg.agent h3 { color: #60a5fa; margin: 8px 0 4px; font-size: 14px; }
+.chat-msg.agent ul, .chat-msg.agent ol { padding-left: 18px; margin: 4px 0; }
+.chat-msg.agent li { margin: 2px 0; }
+.chat-msg.agent strong { color: #f0f4f8; }
+.chat-msg.system {
+  align-self: center; background: #0f172a; color: #6b7280; font-size: 11px;
+  border-radius: 12px; padding: 6px 14px; border: 1px solid #1e293b;
+}
+.chat-tools {
+  margin-top: 8px; padding: 8px; background: #0f172a; border-radius: 6px; border: 1px solid #1e293b;
+}
+.chat-tools summary { font-size: 11px; color: #6b7280; cursor: pointer; }
+.chat-tools .tool-item {
+  font-size: 11px; color: #94a3b8; padding: 3px 0; border-bottom: 1px solid #1e293b;
+}
+.chat-tools .tool-item:last-child { border-bottom: none; }
+.chat-tools .tool-name { color: #67e8f9; font-weight: 600; }
+.chat-tools .tool-ok { color: #6ee7b7; }
+.chat-tools .tool-err { color: #fca5a5; }
+.chat-input-row {
+  display: flex; gap: 8px; padding: 12px 16px; background: #1e293b; border-top: 1px solid #2d3748;
+}
+.chat-input-row input {
+  flex: 1; padding: 10px 14px; background: #0f172a; border: 1px solid #374151;
+  border-radius: 8px; color: #e2e8f0; font-size: 13px; outline: none;
+}
+.chat-input-row input:focus { border-color: #3b82f6; }
+.chat-input-row button {
+  padding: 10px 20px; background: linear-gradient(135deg, #059669, #047857);
+  border: none; border-radius: 8px; color: white; font-size: 13px; font-weight: 600;
+  cursor: pointer; white-space: nowrap;
+}
+.chat-input-row button:hover { background: linear-gradient(135deg, #10b981, #059669); }
+.chat-input-row button:disabled { opacity: 0.4; cursor: not-allowed; }
+.chat-typing { display: flex; gap: 4px; padding: 4px 0; align-items: center; }
+.chat-typing span {
+  width: 6px; height: 6px; border-radius: 50%; background: #6b7280;
+  animation: typing 1.2s infinite ease-in-out;
+}
+.chat-typing span:nth-child(2) { animation-delay: 0.2s; }
+.chat-typing span:nth-child(3) { animation-delay: 0.4s; }
+@keyframes typing { 0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; } 40% { transform: scale(1); opacity: 1; } }
 </style>
 </head>
 <body>
@@ -368,6 +443,7 @@ body {
   <div class="mode-tabs">
     <div class="mode-tab active" onclick="switchMode('agent')">🤖 Agent 模式（用户输入 → LLM 规划 → 执行）</div>
     <div class="mode-tab" onclick="switchMode('preset')">📋 预设场景（选择已有 workflow 执行）</div>
+    <div class="mode-tab" onclick="switchMode('datafirst')">🗂️ 数据接入（自然语言 → 本体 → Pipeline）</div>
   </div>
 
   <!-- Agent Mode: Input → Plan → Execute -->
@@ -406,6 +482,23 @@ body {
           <button class="plan-confirm" onclick="confirmPlan()">③ 确认执行此方案</button>
           <button class="plan-retry" onclick="planWorkflow()">重新规划</button>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Data-First Mode -->
+  <div id="datafirst-mode">
+    <div class="chat-container">
+      <div class="chat-header">
+        <h3>🗂️ 数据接入助手</h3>
+        <div class="chat-status" id="df-status">就绪 — 输入你的数据接入需求</div>
+      </div>
+      <div class="chat-messages" id="df-messages">
+        <div class="chat-msg system">👋 你好！我是数据接入助手。告诉我你想接入哪个表，我会帮你完成：查数据源 → 扫描表结构 → 创建本体 → 生成 Pipeline。</div>
+      </div>
+      <div class="chat-input-row">
+        <input type="text" id="df-input" placeholder="例：帮我把 df_product 表接入系统，创建 Product 本体" onkeydown="if(event.key==='Enter')sendDatafirst()" />
+        <button id="df-send-btn" onclick="sendDatafirst()">发送</button>
       </div>
     </div>
   </div>
@@ -922,11 +1015,130 @@ function addTimelineRaw(html) {
 
 // --- Mode Switching ---
 function switchMode(mode) {
+  const modes = ['agent', 'preset', 'datafirst'];
   document.querySelectorAll('.mode-tab').forEach((t, i) => {
-    t.classList.toggle('active', (mode === 'agent' && i === 0) || (mode === 'preset' && i === 1));
+    t.classList.toggle('active', mode === modes[i]);
   });
-  document.getElementById('agent-mode').style.display = mode === 'agent' ? 'block' : 'none';
-  document.getElementById('preset-mode').style.display = mode === 'preset' ? 'block' : 'none';
+  modes.forEach(m => {
+    const el = document.getElementById(m + '-mode');
+    if (el) el.style.display = m === mode ? 'block' : 'none';
+  });
+  if (mode === 'datafirst') {
+    document.querySelector('.main-grid').style.display = 'none';
+  } else {
+    document.querySelector('.main-grid').style.display = '';
+  }
+}
+
+// --- Data-First Chat ---
+let _dfBusy = false;
+
+function dfAddMsg(role, content, toolCalls) {
+  const box = document.getElementById('df-messages');
+  const div = document.createElement('div');
+  div.className = 'chat-msg ' + role;
+
+  if (role === 'agent') {
+    div.innerHTML = renderMarkdown(content);
+    if (toolCalls && toolCalls.length > 0) {
+      const details = document.createElement('details');
+      details.className = 'chat-tools';
+      const summary = document.createElement('summary');
+      summary.textContent = `🔧 工具调用 (${toolCalls.length})`;
+      details.appendChild(summary);
+      toolCalls.forEach(tc => {
+        const item = document.createElement('div');
+        item.className = 'tool-item';
+        const err = tc.result && tc.result.error;
+        const st = err ? `<span class="tool-err">❌ ${err.substring(0, 60)}</span>` : '<span class="tool-ok">✅</span>';
+        item.innerHTML = `<span class="tool-name">${tc.tool}</span> ${st}`;
+        details.appendChild(item);
+      });
+      div.appendChild(details);
+    }
+  } else {
+    div.textContent = content;
+  }
+
+  box.appendChild(div);
+  box.scrollTop = box.scrollHeight;
+}
+
+function renderMarkdown(md) {
+  let html = md
+    .replace(/^### (.+)$/gm, '<h3>$1</h3>')
+    .replace(/^## (.+)$/gm, '<h2>$1</h2>')
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\n\n/g, '</p><p>')
+    .replace(/\n/g, '<br>');
+
+  // tables
+  html = html.replace(/((\|.+\|<br>){2,})/g, (match) => {
+    const rows = match.split('<br>').filter(r => r.trim().startsWith('|'));
+    if (rows.length < 2) return match;
+    let table = '<table>';
+    rows.forEach((row, i) => {
+      const cells = row.split('|').filter(c => c.trim());
+      if (cells.every(c => /^[\s\-:]+$/.test(c))) return;
+      const tag = i === 0 ? 'th' : 'td';
+      table += '<tr>' + cells.map(c => `<${tag}>${c.trim()}</${tag}>`).join('') + '</tr>';
+    });
+    table += '</table>';
+    return table;
+  });
+
+  return '<p>' + html + '</p>';
+}
+
+async function sendDatafirst() {
+  if (_dfBusy) return;
+  const input = document.getElementById('df-input');
+  const msg = input.value.trim();
+  if (!msg) return;
+
+  input.value = '';
+  dfAddMsg('user', msg);
+
+  _dfBusy = true;
+  const btn = document.getElementById('df-send-btn');
+  btn.disabled = true;
+  document.getElementById('df-status').textContent = '思考中...';
+
+  // typing indicator
+  const typing = document.createElement('div');
+  typing.className = 'chat-msg agent';
+  typing.id = 'df-typing';
+  typing.innerHTML = '<div class="chat-typing"><span></span><span></span><span></span></div>';
+  document.getElementById('df-messages').appendChild(typing);
+  document.getElementById('df-messages').scrollTop = document.getElementById('df-messages').scrollHeight;
+
+  try {
+    const resp = await fetch('/api/datafirst', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ input: msg }),
+    });
+    const data = await resp.json();
+
+    typing.remove();
+
+    if (data.success && data.response) {
+      dfAddMsg('agent', data.response, data.tool_calls);
+      document.getElementById('df-status').textContent = `完成 — ${data.iterations} 轮推理，${(data.tool_calls||[]).length} 次工具调用`;
+    } else {
+      const errText = data.error || '规划失败';
+      dfAddMsg('agent', '⚠️ ' + errText, data.tool_calls);
+      document.getElementById('df-status').textContent = '出错了';
+    }
+  } catch (e) {
+    typing.remove();
+    dfAddMsg('system', '❌ 请求失败: ' + e.message);
+    document.getElementById('df-status').textContent = '连接失败';
+  } finally {
+    _dfBusy = false;
+    btn.disabled = false;
+  }
 }
 
 // --- Agent Planning ---
