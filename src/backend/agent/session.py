@@ -249,6 +249,33 @@ class SessionStore:
             "tool_calls_log": json.loads(row[1]),
         }
 
+    async def list_sessions(self) -> list[dict[str, Any]]:
+        """列出所有未过期 session（含首条用户消息摘要）。"""
+        cutoff = time.time() - _SESSION_TTL_SECONDS
+        db = await self._get_db()
+        async with db.execute(
+            "SELECT session_id, messages, created_at, last_active "
+            "FROM sessions WHERE last_active >= ? ORDER BY last_active DESC",
+            (cutoff,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+
+        result = []
+        for row in rows:
+            messages = json.loads(row[1])
+            summary = ""
+            for m in messages:
+                if m.get("role") == "user" and m.get("content") and not m["content"].startswith("【系统"):
+                    summary = m["content"][:60]
+                    break
+            result.append({
+                "session_id": row[0],
+                "summary": summary or "(空对话)",
+                "created_at": row[2],
+                "last_active": row[3],
+            })
+        return result
+
     async def delete(self, session_id: str) -> None:
         db = await self._get_db()
         await db.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
