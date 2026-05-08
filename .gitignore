@@ -23,7 +23,8 @@ Thumbs.db
 # Logs
 *.log
 
-# Memory data (runtime generated)
+# Runtime data (sessions DB, memory store)
+data/
 src/data/memory/
 
 # Config files with real secrets (use config.yaml as template reference only)
