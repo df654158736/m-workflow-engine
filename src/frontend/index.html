@@ -1348,6 +1348,7 @@ async function _dfSendLegacy(body) {
     dfAddMsg('agent', '⚠️ ' + (data.error || '规划失败'), data.tool_calls);
     document.getElementById('df-status').textContent = '出错了';
   }
+  dfLoadSessionList();
 }
 
 function dfShowConfirmation(pendingTool) {

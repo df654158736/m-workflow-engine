@@ -27,6 +27,7 @@ from starlette.responses import StreamingResponse
 
 from backend.dsl_parser import parse_file, topological_sort, validate
 from backend.routing import ALL_QUEUES, get_queue_for_node
+from backend.agent.session import get_session_store
 
 # --- Load Config ---
 import yaml as _yaml
@@ -585,18 +586,15 @@ async def datafirst_agent_stream(payload: dict[str, Any]):
 @app.get("/api/datafirst/sessions")
 async def datafirst_list_sessions():
     """列出所有未过期的 Session（供前端历史列表）。"""
-    if not _planning_agent:
-        raise HTTPException(500, "Planning Agent not initialized")
-    return await _planning_agent.sessions.list_sessions()
+    store = get_session_store()
+    return await store.list_sessions()
 
 
 @app.get("/api/datafirst/sessions/{session_id}/history")
 async def datafirst_session_history(session_id: str):
     """获取 Session 对话历史（供前端刷新后回填）。"""
-    if not _planning_agent:
-        raise HTTPException(500, "Planning Agent not initialized")
-
-    result = await _planning_agent.sessions.get_history(session_id)
+    store = get_session_store()
+    result = await store.get_history(session_id)
     if result is None:
         raise HTTPException(404, "Session 不存在或已过期")
     return result
