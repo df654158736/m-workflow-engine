@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Read",
+      "Write",
+      "Edit",
+      "Glob",
+      "Grep",
+      "Bash(*)",
+      "Agent(*)",
+      "TodoWrite",
+      "WebFetch",
+      "WebSearch",
+      "Edit(/.claude/skills/doc-sync-after-dev/**)",
+      "Edit(/.claude/skills/doc-sync/**)"
+    ]
+  }
+}

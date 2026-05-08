@@ -6,6 +6,11 @@
 3. 每轮：LLM 输出 → 如果是 tool_call → 执行工具 → 结果回传 → 下一轮
 4. 直到 LLM 输出最终 YAML（finish_reason=stop 且包含 nodes）
 5. 最终自动调一次 validate_dag 确保质量
+
+Session 模式（datafirst）：
+- 首次请求创建 Session，后续请求通过 session_id 追加到同一个 messages
+- tool_call / tool_result 完整保留在 Session 中
+- Agent 输出文本时暂停返回，用户回复后从断点恢复
 """
 
 from __future__ import annotations
@@ -21,6 +26,7 @@ from openai import AsyncOpenAI
 from backend.agent.tool_registry import ToolRegistry, get_registry
 from backend.agent.skill_loader import SkillLoader
 from backend.agent.memory_store import MemoryStore, get_memory_store
+from backend.agent.session import Session, SessionStore, get_session_store, truncate_tool_result
 
 logger = structlog.get_logger()
 
@@ -91,10 +97,15 @@ edges:
 
 DATAFIRST_TOOLS = {
     "list_datasources",
+    "list_tables",
     "scan_table_columns",
     "list_object_types",
     "create_object_type",
     "ai_infer_properties",
+    "get_object_type_detail",
+    "update_object_type_properties",
+    "finalize_and_publish",
+    "delete_object_type",
     "create_fabric_task",
     "trigger_ai_analysis",
     "get_field_mappings",
@@ -103,41 +114,84 @@ DATAFIRST_TOOLS = {
 
 DATAFIRST_PROMPT_TEMPLATE = """你是一个数据接入助手 Agent。用户用自然语言描述数据接入需求，你通过调用工具完成全流程。
 
+## ⚠️ 多轮对话
+
+这是一个持续的多轮对话。你的 messages 中包含之前所有轮次的完整内容，包括你调用过的工具和返回结果。
+
+**你必须基于已有上下文继续工作，而不是重新开始。**
+
+常见的延续场景：
+- 用户回复 "确认"/"好的"/"创建"/"提交"/"继续" → 执行你上一轮提出的方案
+- 用户回复 "修改" + 具体内容 → 按修改意见调整方案
+- 用户提出新需求 → 才从标准流程第 1 步开始
+
+**禁止行为**：
+- ❌ 用户说"确认"时，不要重新查询数据源/表/本体，直接执行上一轮提出的操作
+- ❌ 忽略已经获取的信息（数据源ID、表结构、已设计的属性等）
+- ❌ 让用户重复提供已经提供过的信息
+
 ## 你的能力
 
 你可以调用以下工具完成数据接入的完整流程：
 
 ### 查询类工具
 - `list_datasources` — 列出已有数据源（ID、名称、类型、状态）
-- `scan_table_columns` — 扫描表的列元数据（列名、类型、主键）
+- `list_tables` — 列出某个数据源的所有表（表名、schema、行数、备注）
+- `scan_table_columns` — 扫描某张表的列元数据（列名、类型、主键）
 - `list_object_types` — 列出已有 ObjectType（避免重复创建）
 
 ### 本体操作工具
 - `ai_infer_properties` — AI 根据表列推荐 ObjectType 属性
-- `create_object_type` — 创建 ObjectType（⚠️ 写操作，需用户确认）
+- `create_object_type` — 创建 ObjectType 并自动定稿发布（⚠️ 写操作，需用户确认）
+  - **必须传 datasource_id 和 table_name**（从之前工具获取的值）
+  - 每个属性**必须包含 display_name（中文名）和 source_column（源表列名）**
+  - 示例属性: `{{"property_name":"sku","display_name":"SKU编码","type":"String","required":true,"is_primary_key":false,"source_column":"sku"}}`
 
-### 数据编织工具
-- `create_fabric_task` — 创建数据编织任务（⚠️ 写操作，需用户确认）
+### 本体补全工具（处理半成品 ObjectType）
+- `get_object_type_detail` — 查看 ObjectType 详情：当前状态（EDITING/DRAFT/ACTIVE）、已有属性、数据映射
+- `update_object_type_properties` — 向已有 ObjectType 逐个添加缺失的属性（每次加一个）
+- `finalize_and_publish` — 将 EDITING/DRAFT 状态的 ObjectType 定稿发布为 ACTIVE
+- `delete_object_type` — 删除 ObjectType 及所有关联资源（⚠️ 不可逆，必须用户确认）
+
+### 数据编织工具（仅在手动编织时使用，create_object_type 已自动处理）
+- `create_fabric_task` — 手动创建数据编织任务（通常不需要，create_object_type 传了 datasource_id 会自动创建）
 - `trigger_ai_analysis` — 触发 AI 语义分析，返回候选对象
 - `get_field_mappings` — 获取/生成字段映射建议
-- `generate_pipeline` — 生成 Pipeline DSL
+- `generate_pipeline` — 生成 Pipeline DSL（通常不需要，create_object_type 会自动生成 Pipeline）
 
-## ⚠️ 标准流程（严格按此顺序）
+## 标准流程（仅在新需求时从头开始）
 
 1. **查数据源** → `list_datasources` 找到目标数据源
-2. **扫描表结构** → `scan_table_columns` 获取列信息
-3. **检查已有本体** → `list_object_types` 避免重复
-4. **设计本体** → 可选用 `ai_infer_properties`，或根据表列自行设计
-5. **向用户展示方案** → 列出推荐的 ObjectType 名称和属性，等待用户确认
-6. **创建 ObjectType** → 用户确认后调用 `create_object_type`
-7. **创建编织任务** → `create_fabric_task`
-8. **AI 分析** → `trigger_ai_analysis`
-9. **字段映射** → `get_field_mappings`
-10. **生成 Pipeline** → `generate_pipeline`，展示 DSL 给用户
+2. **列出表** → `list_tables` 查看数据源中有哪些表
+3. **扫描表结构** → `scan_table_columns` 获取指定表的列信息
+4. **检查已有本体** → `list_object_types` 避免重复
+5. **设计本体** → 可选用 `ai_infer_properties`，或根据表列自行设计
+6. **向用户展示方案** → 列出推荐的 ObjectType 名称和属性，等待用户确认
+7. **创建 ObjectType** → 用户确认后调用 `create_object_type`（传 datasource_id + table_name，会自动创建编织任务、字段映射和 Pipeline）
+8. **完成** → 告知用户实体和 Pipeline 已创建成功
+
+> 注意：`create_object_type` 传了 datasource_id 后，会自动完成编织任务创建、字段映射、Pipeline 生成。
+> 不需要再手动调 `create_fabric_task` / `get_field_mappings` / `generate_pipeline`。
+
+## 半成品补全流程（用户要求补全已有但未完成的 ObjectType）
+
+当 `list_object_types` 发现状态为 EDITING 或 DRAFT 的 ObjectType 时，说明创建未完成。按以下步骤处理：
+
+1. **查详情** → `get_object_type_detail` 查看当前已有哪些属性、缺什么
+2. **对比表结构** → 如有 datasource_id，用 `scan_table_columns` 获取表列，与已有属性对比找出缺失项
+3. **向用户展示** → 告知"该 ObjectType 已存在，状态为 X，已有 N 个属性，缺少以下属性：…"
+4. **补全属性** → 用户确认后，用 `update_object_type_properties` 逐个添加缺失属性
+5. **定稿发布** → 属性补全后，调 `finalize_and_publish` 将其推进到 ACTIVE 状态
+
+**判断逻辑**：
+- 状态 EDITING + 属性不全 → 补属性 → finalize → publish
+- 状态 EDITING + 属性已全 → 直接 finalize → publish
+- 状态 DRAFT → 直接 publish
+- 状态 ACTIVE → 已完成，告知用户无需操作
 
 ## 关键规则
 
-1. **写操作必须确认** — 创建 ObjectType、创建编织任务前，必须向用户展示方案并等待确认。直接在回复中展示方案即可。
+1. **写操作必须确认** — 创建 ObjectType 前，必须向用户展示方案并等待确认
 2. **渐进式推进** — 每步完成后汇报结果，等用户确认再继续下一步
 3. **错误恢复** — API 报错时，向用户说明原因并给出替代方案
 4. **已有资源复用** — 操作前先查询已有资源，避免重复创建
@@ -158,6 +212,7 @@ class PlanResult:
     success: bool
     yaml_text: str = ""
     workflow_id: str = ""
+    session_id: str = ""
     errors: list[str] = field(default_factory=list)
     iterations: int = 0
     tool_calls_log: list[dict] = field(default_factory=list)
@@ -173,46 +228,91 @@ class PlanningAgent:
         model: str = "qwen-plus",
         tool_registry: ToolRegistry | None = None,
         skill_loader: SkillLoader | None = None,
-        max_iterations: int = 8,
+        max_iterations: int = 15,
     ) -> None:
         self.llm = llm_client
         self.model = model
         self.tools = tool_registry or get_registry()
         self.skills = skill_loader or SkillLoader()
         self.memory = get_memory_store()
+        self.sessions = get_session_store()
         self.max_iterations = max_iterations
         self._nudge_threshold = 3
 
-    async def plan(self, user_input: str, mode: str = "workflow") -> PlanResult:
-        """执行 ReAct 循环规划工作流。
-
-        mode: "workflow" = 生成工作流 YAML, "datafirst" = 数据接入全流程
-        """
-        # 1. 加载相关 Skills
+    def _build_system_messages(self, user_input: str, mode: str) -> list[dict[str, Any]]:
+        """构建 system prompt messages。"""
         skills_context = self.skills.load_relevant(user_input)
         template = DATAFIRST_PROMPT_TEMPLATE if mode == "datafirst" else SYSTEM_PROMPT_TEMPLATE
         system_prompt = template.format(
             skills_context=f"\n## 领域知识\n\n{skills_context}" if skills_context else ""
         )
 
-        # 2. 召回历史经验
-        memory_context = self._recall_similar(user_input)
-
-        # 3. 初始化 messages
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": system_prompt},
         ]
+
+        memory_context = self._recall_similar(user_input)
         if memory_context:
             messages.append({"role": "system", "content": memory_context})
-        messages.append({"role": "user", "content": user_input})
 
+        return messages
+
+    async def plan(self, user_input: str, mode: str = "workflow") -> PlanResult:
+        """无状态规划（workflow 模式使用）。"""
+        system_msgs = self._build_system_messages(user_input, mode)
+        messages = system_msgs + [{"role": "user", "content": user_input}]
+        return await self._react_loop(messages, mode, tool_calls_log=[])
+
+    async def chat(self, user_input: str, session_id: str | None = None) -> PlanResult:
+        """有状态对话（datafirst 模式使用）。
+
+        session_id 为空时创建新 Session；
+        有值时追加用户消息到已有 Session 继续。
+        """
+        mode = "datafirst"
+
+        if session_id:
+            session = self.sessions.get(session_id)
+            if not session:
+                return PlanResult(
+                    success=False,
+                    errors=["会话已过期或不存在，请重新开始对话"],
+                )
+        else:
+            system_msgs = self._build_system_messages(user_input, mode)
+            session = self.sessions.create(mode, system_msgs)
+
+        session.messages.append({"role": "user", "content": user_input})
+
+        if session.needs_compact():
+            session.compact()
+
+        turn_tool_calls: list[dict] = []
+        result = await self._react_loop(
+            session.messages,
+            mode,
+            tool_calls_log=turn_tool_calls,
+        )
+        session.tool_calls_log.extend(turn_tool_calls)
+        result.tool_calls_log = turn_tool_calls
+        result.session_id = session.session_id
+        return result
+
+    async def _react_loop(
+        self,
+        messages: list[dict[str, Any]],
+        mode: str,
+        tool_calls_log: list[dict],
+    ) -> PlanResult:
+        """核心 ReAct 循环。messages 是引用传递，会被原地修改。"""
         result = PlanResult(success=False)
+        result.tool_calls_log = tool_calls_log
+
         if mode == "datafirst":
             tool_schemas = self.tools.schemas(only=DATAFIRST_TOOLS) or None
         else:
             tool_schemas = self.tools.schemas() or None
 
-        # 4. ReAct Loop
         for iteration in range(self.max_iterations):
             result.iterations = iteration + 1
             logger.info(f"Planning iteration {iteration + 1}/{self.max_iterations}")
@@ -243,6 +343,7 @@ class PlanningAgent:
                     except (json.JSONDecodeError, TypeError):
                         tc["function"]["arguments"] = "{}"
                 messages.append(msg_dict)
+
                 for tool_call in message.tool_calls:
                     fn_name = tool_call.function.name
                     try:
@@ -250,7 +351,7 @@ class PlanningAgent:
                     except json.JSONDecodeError:
                         logger.warning(f"Invalid JSON in tool_call args for {fn_name}")
                         tool_result = {"error": f"参数 JSON 格式错误，请重新调用 {fn_name}，确保参数是合法 JSON"}
-                        result.tool_calls_log.append({
+                        tool_calls_log.append({
                             "iteration": iteration + 1,
                             "tool": fn_name,
                             "args": {"_raw": tool_call.function.arguments[:200]},
@@ -266,17 +367,18 @@ class PlanningAgent:
                     logger.info(f"Agent calling tool: {fn_name}", args=fn_args)
                     tool_result = await self.tools.execute(fn_name, fn_args)
 
-                    result.tool_calls_log.append({
+                    tool_calls_log.append({
                         "iteration": iteration + 1,
                         "tool": fn_name,
                         "args": fn_args,
                         "result": tool_result,
                     })
 
+                    result_str = json.dumps(tool_result, ensure_ascii=False)
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tool_call.id,
-                        "content": json.dumps(tool_result, ensure_ascii=False),
+                        "content": truncate_tool_result(result_str),
                     })
 
                 if mode != "datafirst" and iteration + 1 >= self._nudge_threshold:
@@ -291,7 +393,7 @@ class PlanningAgent:
             messages.append({"role": "assistant", "content": content})
             result.thinking_log.append(content)
 
-            # datafirst 模式：Agent 输出文本即为最终回复
+            # datafirst 模式：Agent 输出文本即为最终回复（暂停等用户）
             if mode == "datafirst":
                 if choice.finish_reason == "stop":
                     result.success = True
@@ -309,9 +411,8 @@ class PlanningAgent:
                 continue
 
             if yaml_text:
-                # 最终校验
                 final_check = await self.tools.execute("validate_dag", {"yaml_text": yaml_text})
-                result.tool_calls_log.append({
+                tool_calls_log.append({
                     "iteration": iteration + 1,
                     "tool": "validate_dag (final)",
                     "args": {"yaml_text": "..."},
@@ -323,11 +424,13 @@ class PlanningAgent:
                     result.yaml_text = yaml_text
                     result.workflow_id = final_check.get("workflow_id", "")
                     result.errors = []
-                    self._auto_save_memory(user_input, yaml_text)
+                    self._auto_save_memory(
+                        self._find_user_input(messages),
+                        yaml_text,
+                    )
                     logger.info("Planning succeeded", iterations=iteration + 1)
                     return result
                 else:
-                    # 校验失败，让 Agent 修正
                     error_msg = json.dumps(final_check, ensure_ascii=False)
                     messages.append({
                         "role": "user",
@@ -335,10 +438,16 @@ class PlanningAgent:
                     })
                     continue
 
-        # 超过最大迭代次数
         result.errors = ["达到最大迭代次数，规划未完成"]
         logger.warning("Planning failed: max iterations reached")
         return result
+
+    def _find_user_input(self, messages: list[dict[str, Any]]) -> str:
+        """从 messages 中找到第一条 user 消息。"""
+        for m in messages:
+            if m.get("role") == "user":
+                return m.get("content", "")
+        return ""
 
     def _recall_similar(self, user_input: str) -> str:
         """从 Memory 中召回相似案例，拼接为参考 context。"""
@@ -366,14 +475,12 @@ class PlanningAgent:
 
     def _extract_yaml(self, text: str) -> str:
         """从 LLM 输出中提取 YAML 代码块。"""
-        # 尝试提取 ```yaml ... ``` 代码块
         if "```yaml" in text:
             parts = text.split("```yaml")
             if len(parts) >= 2:
                 yaml_part = parts[-1].split("```")[0]
                 return yaml_part.strip()
 
-        # 尝试提取 ``` ... ``` 代码块（无语言标记）
         if "```" in text:
             parts = text.split("```")
             for i in range(1, len(parts), 2):
@@ -381,7 +488,6 @@ class PlanningAgent:
                 if "workflow_id:" in candidate and "nodes:" in candidate:
                     return candidate
 
-        # 如果整段文本看起来就是 YAML
         stripped = text.strip()
         if stripped.startswith("workflow_id:") and "nodes:" in stripped:
             return stripped

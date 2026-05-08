@@ -1,6 +1,7 @@
 """数据源 Tools — 调用真实 web-app REST API。
 
 T3: list_datasources — 列出已接入的数据源
+T3.5: list_tables — 列出数据源中的所有表
 T4: scan_table_columns — 扫描表的列元数据
 """
 
@@ -56,6 +57,50 @@ async def list_datasources(keyword: str = "", ds_type: str = "") -> dict:
         })
 
     return {"datasources": result, "total": len(result)}
+
+
+@tool(
+    name="list_tables",
+    description="列出指定数据源中的所有表。返回每张表的名称、schema、类型、行数、大小、备注。Agent 用此工具回答'有哪些表'的问题。",
+    parameters={
+        "type": "object",
+        "properties": {
+            "datasource_id": {
+                "type": "string",
+                "description": "数据源 ID（从 list_datasources 获取）",
+            },
+        },
+        "required": ["datasource_id"],
+    },
+)
+async def list_tables(datasource_id: str) -> dict:
+    project_id = get_project_id()
+    if not project_id:
+        return {"error": "未配置 project_id"}
+
+    try:
+        data = await api_get(
+            f"/api/v1/projects/{project_id}/datasources/{datasource_id}/metadata"
+        )
+    except ApiError as e:
+        return {"error": str(e)}
+
+    tables_raw = data if isinstance(data, list) else data.get("data", data.get("tables", []))
+    result = []
+    for t in tables_raw:
+        result.append({
+            "name": t.get("name"),
+            "schema": t.get("schema", ""),
+            "type": t.get("type", "TABLE"),
+            "row_count": t.get("row_count", 0),
+            "comment": t.get("comment", ""),
+        })
+
+    return {
+        "datasource_id": datasource_id,
+        "tables": result,
+        "total": len(result),
+    }
 
 
 @tool(

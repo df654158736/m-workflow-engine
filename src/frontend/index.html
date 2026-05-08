@@ -491,7 +491,10 @@ body {
     <div class="chat-container">
       <div class="chat-header">
         <h3>🗂️ 数据接入助手</h3>
-        <div class="chat-status" id="df-status">就绪 — 输入你的数据接入需求</div>
+        <div style="display:flex;align-items:center;gap:10px;">
+          <div class="chat-status" id="df-status">就绪 — 输入你的数据接入需求</div>
+          <button onclick="resetDatafirstSession()" style="padding:3px 10px;background:#374151;border:1px solid #4b5563;border-radius:4px;color:#9ca3af;font-size:11px;cursor:pointer;">新对话</button>
+        </div>
       </div>
       <div class="chat-messages" id="df-messages">
         <div class="chat-msg system">👋 你好！我是数据接入助手。告诉我你想接入哪个表，我会帮你完成：查数据源 → 扫描表结构 → 创建本体 → 生成 Pipeline。</div>
@@ -1091,6 +1094,8 @@ function renderMarkdown(md) {
   return '<p>' + html + '</p>';
 }
 
+let _dfSessionId = null;
+
 async function sendDatafirst() {
   if (_dfBusy) return;
   const input = document.getElementById('df-input');
@@ -1114,18 +1119,23 @@ async function sendDatafirst() {
   document.getElementById('df-messages').scrollTop = document.getElementById('df-messages').scrollHeight;
 
   try {
+    const body = { input: msg };
+    if (_dfSessionId) body.session_id = _dfSessionId;
+
     const resp = await fetch('/api/datafirst', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ input: msg }),
+      body: JSON.stringify(body),
     });
     const data = await resp.json();
 
     typing.remove();
 
+    if (data.session_id) _dfSessionId = data.session_id;
+
     if (data.success && data.response) {
       dfAddMsg('agent', data.response, data.tool_calls);
-      document.getElementById('df-status').textContent = `完成 — ${data.iterations} 轮推理，${(data.tool_calls||[]).length} 次工具调用`;
+      document.getElementById('df-status').textContent = `就绪 — ${data.iterations} 轮推理，${(data.tool_calls||[]).length} 次工具调用`;
     } else {
       const errText = data.error || '规划失败';
       dfAddMsg('agent', '⚠️ ' + errText, data.tool_calls);
@@ -1139,6 +1149,13 @@ async function sendDatafirst() {
     _dfBusy = false;
     btn.disabled = false;
   }
+}
+
+function resetDatafirstSession() {
+  _dfSessionId = null;
+  document.getElementById('df-messages').innerHTML =
+    '<div class="chat-msg system">👋 新对话已开始。告诉我你的数据接入需求。</div>';
+  document.getElementById('df-status').textContent = '就绪 — 输入你的数据接入需求';
 }
 
 // --- Agent Planning ---

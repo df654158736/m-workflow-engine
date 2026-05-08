@@ -12,7 +12,9 @@ from typing import Any
 import httpx
 import yaml
 
-_CONFIG_PATH = Path(__file__).parent.parent.parent.parent / "config.yaml"
+_CONFIG_DIR = Path(__file__).parent.parent.parent.parent
+_CONFIG_LOCAL = _CONFIG_DIR / "config.local.yaml"
+_CONFIG_PATH = _CONFIG_LOCAL if _CONFIG_LOCAL.exists() else _CONFIG_DIR / "config.yaml"
 
 _client: httpx.AsyncClient | None = None
 _config: dict[str, Any] = {}

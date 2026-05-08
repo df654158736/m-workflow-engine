@@ -25,3 +25,7 @@ Thumbs.db
 
 # Memory data (runtime generated)
 src/data/memory/
+
+# Config files with real secrets (use config.yaml as template reference only)
+config.yaml
+config.local.yaml

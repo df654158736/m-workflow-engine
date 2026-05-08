@@ -32,13 +32,15 @@ from backend.routing import ALL_QUEUES, get_queue_for_node
 import yaml as _yaml
 
 CONFIG_PATH = Path(__file__).parent.parent.parent / "config.yaml"
+CONFIG_LOCAL_PATH = Path(__file__).parent.parent.parent / "config.local.yaml"
 
 
 def _load_config() -> dict:
-    """Load config from config.yaml, with env vars taking priority."""
+    """Load config. Prefer config.local.yaml (real secrets) over config.yaml (template)."""
+    path = CONFIG_LOCAL_PATH if CONFIG_LOCAL_PATH.exists() else CONFIG_PATH
     cfg = {}
-    if CONFIG_PATH.exists():
-        with open(CONFIG_PATH) as f:
+    if path.exists():
+        with open(path) as f:
             cfg = _yaml.safe_load(f) or {}
     return cfg
 
@@ -505,7 +507,11 @@ async def _parse_and_save_yaml(yaml_text: str, iterations: int, tool_calls: list
 
 @app.post("/api/datafirst")
 async def datafirst_agent(payload: dict[str, Any]):
-    """Data-First Agent: 自然语言驱动的数据接入全流程。"""
+    """Data-First Agent: 有状态多轮对话。
+
+    首次请求不带 session_id → 创建新 Session
+    后续请求带 session_id → 追加到已有 Session 继续
+    """
     user_input = payload.get("input", "")
     if not user_input:
         raise HTTPException(400, "input is required")
@@ -516,10 +522,12 @@ async def datafirst_agent(payload: dict[str, Any]):
     if not _planning_agent:
         raise HTTPException(500, "Planning Agent not initialized (check LLM config)")
 
-    plan_result = await _planning_agent.plan(user_input, mode="datafirst")
+    session_id = payload.get("session_id")
+    plan_result = await _planning_agent.chat(user_input, session_id=session_id)
 
     return {
         "success": plan_result.success,
+        "session_id": plan_result.session_id,
         "response": plan_result.yaml_text if plan_result.success else "",
         "error": "; ".join(plan_result.errors) if plan_result.errors else "",
         "iterations": plan_result.iterations,
