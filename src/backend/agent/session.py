@@ -139,7 +139,7 @@ class SessionStore:
         self._db: aiosqlite.Connection | None = None
 
     async def _get_db(self) -> aiosqlite.Connection:
-        if self._db is None or not self._db.is_alive:
+        if self._db is None:
             self._db = await aiosqlite.connect(str(self._db_path))
             await self._db.execute("PRAGMA journal_mode=WAL")
             await self._db.execute(_CREATE_TABLE_SQL)
