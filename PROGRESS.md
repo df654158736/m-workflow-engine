@@ -33,6 +33,7 @@
 
 ## Recently Completed
 
+- 2026-05-08: Session 历史记录恢复 — 后端历史查询端点 + 前端 localStorage 持久化 + 页面刷新回填 (dingang)
 - 2026-05-08: Agent 生产化加固 P1 — 流式响应（SSE）+ 并行工具调用 (dingang)
 - 2026-05-08: Agent 生产化加固 P0 — Session SQLite 持久化 + 写操作代码层拦截 + 工具超时保护 (dingang)
 - 2026-05-07: Claude Code 开发框架集成（Skills + 文档模板 + Sprint 管理体系）(dingang)

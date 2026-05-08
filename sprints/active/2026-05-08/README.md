@@ -8,7 +8,8 @@
 | Wave | 范围 | 状态 |
 |------|------|------|
 | wave1 | P0: Session 持久化 + 写操作拦截 + 工具超时 | Done |
-| wave2 | P1: 流式响应（SSE） + 并行工具调用 | Active |
+| wave2 | P1: 流式响应（SSE） + 并行工具调用 | Done |
+| wave3 | Session 历史记录恢复（localStorage + 后端查询 + 回填） | Active |
 
 ## Participants
 

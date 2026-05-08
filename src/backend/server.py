@@ -582,6 +582,18 @@ async def datafirst_agent_stream(payload: dict[str, Any]):
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
+@app.get("/api/datafirst/sessions/{session_id}/history")
+async def datafirst_session_history(session_id: str):
+    """获取 Session 对话历史（供前端刷新后回填）。"""
+    if not _planning_agent:
+        raise HTTPException(500, "Planning Agent not initialized")
+
+    result = await _planning_agent.sessions.get_history(session_id)
+    if result is None:
+        raise HTTPException(404, "Session 不存在或已过期")
+    return result
+
+
 @app.get("/api/workflows")
 async def list_workflows():
     """List available workflow YAML files."""

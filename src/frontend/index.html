@@ -1106,7 +1106,34 @@ function renderMarkdown(md) {
   return '<p>' + html + '</p>';
 }
 
-let _dfSessionId = null;
+const _DF_SESSION_KEY = 'df_session_id';
+let _dfSessionId = localStorage.getItem(_DF_SESSION_KEY);
+
+function _dfSaveSession(id) {
+  _dfSessionId = id;
+  if (id) localStorage.setItem(_DF_SESSION_KEY, id);
+  else localStorage.removeItem(_DF_SESSION_KEY);
+}
+
+async function dfRestoreSession() {
+  if (!_dfSessionId) return;
+  try {
+    const resp = await fetch(`/api/datafirst/sessions/${_dfSessionId}/history`);
+    if (!resp.ok) {
+      _dfSaveSession(null);
+      return;
+    }
+    const data = await resp.json();
+    const box = document.getElementById('df-messages');
+    box.innerHTML = '<div class="chat-msg system">👋 已恢复上次对话，可以继续。</div>';
+    for (const m of data.history) {
+      dfAddMsg(m.role === 'agent' ? 'agent' : 'user', m.content);
+    }
+    document.getElementById('df-status').textContent = '就绪 — 已恢复历史对话';
+  } catch (e) {
+    _dfSaveSession(null);
+  }
+}
 
 async function sendDatafirst() {
   if (_dfBusy) return;
@@ -1214,7 +1241,7 @@ async function _dfConsumeStream(resp) {
             document.getElementById('df-status').textContent = '等待确认...';
             break;
           case 'done':
-            if (evtData.session_id) _dfSessionId = evtData.session_id;
+            if (evtData.session_id) _dfSaveSession(evtData.session_id);
             document.getElementById('df-status').textContent = '就绪';
             break;
           case 'error':
@@ -1238,7 +1265,7 @@ async function _dfSendLegacy(body) {
   });
   const data = await resp.json();
 
-  if (data.session_id) _dfSessionId = data.session_id;
+  if (data.session_id) _dfSaveSession(data.session_id);
 
   if (data.requires_confirmation && data.pending_tool) {
     dfAddMsg('agent', data.response || `操作 "${data.pending_tool.tool}" 需要您确认。`, data.tool_calls);
@@ -1337,7 +1364,7 @@ async function dfRejectTool() {
 }
 
 function resetDatafirstSession() {
-  _dfSessionId = null;
+  _dfSaveSession(null);
   document.getElementById('df-messages').innerHTML =
     '<div class="chat-msg system">👋 新对话已开始。告诉我你的数据接入需求。</div>';
   document.getElementById('df-status').textContent = '就绪 — 输入你的数据接入需求';
@@ -1565,6 +1592,7 @@ document.getElementById('settings-modal').addEventListener('click', function(e) 
 });
 
 init();
+dfRestoreSession();
 loadPresets();
 loadConfig();
 </script>

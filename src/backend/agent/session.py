@@ -215,6 +215,40 @@ class SessionStore:
         )
         await db.commit()
 
+    async def get_history(self, session_id: str) -> dict[str, Any] | None:
+        """只读获取 session 的可渲染历史（不 touch / 不续期）。"""
+        db = await self._get_db()
+        async with db.execute(
+            "SELECT messages, tool_calls_log, created_at, last_active "
+            "FROM sessions WHERE session_id = ?",
+            (session_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        if not row:
+            return None
+
+        last_active = row[3]
+        if time.time() - last_active > _SESSION_TTL_SECONDS:
+            await self.delete(session_id)
+            return None
+
+        messages = json.loads(row[0])
+        history = []
+        for m in messages:
+            role = m.get("role")
+            content = m.get("content")
+            if role == "user" and content and not content.startswith("【系统"):
+                history.append({"role": "user", "content": content})
+            elif role == "assistant" and content:
+                history.append({"role": "agent", "content": content})
+
+        return {
+            "session_id": session_id,
+            "created_at": row[2],
+            "history": history,
+            "tool_calls_log": json.loads(row[1]),
+        }
+
     async def delete(self, session_id: str) -> None:
         db = await self._get_db()
         await db.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
