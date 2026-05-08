@@ -545,6 +545,43 @@ async def datafirst_agent(payload: dict[str, Any]):
     return resp
 
 
+@app.post("/api/datafirst/stream")
+async def datafirst_agent_stream(payload: dict[str, Any]):
+    """Data-First Agent: 流式 SSE 端点。
+
+    事件类型: thinking / tool_call / tool_result / text / confirmation / error / done
+    """
+    confirmed_tool = payload.get("confirmed_tool")
+    user_input = payload.get("input", "")
+    if not user_input and not confirmed_tool:
+        raise HTTPException(400, "input is required")
+
+    if STANDALONE_MODE:
+        raise HTTPException(400, "datafirst 模式需要 LLM，不支持 standalone 模式")
+
+    if not _planning_agent:
+        raise HTTPException(500, "Planning Agent not initialized (check LLM config)")
+
+    session_id = payload.get("session_id")
+
+    import json as _json
+
+    async def event_generator():
+        try:
+            async for event in _planning_agent.chat_stream(
+                user_input or "",
+                session_id=session_id,
+                confirmed_tool=confirmed_tool,
+            ):
+                yield f"event: {event.type}\ndata: {_json.dumps(event.data, ensure_ascii=False)}\n\n"
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            yield f"event: error\ndata: {_json.dumps({'message': str(e)}, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
 @app.get("/api/workflows")
 async def list_workflows():
     """List available workflow YAML files."""

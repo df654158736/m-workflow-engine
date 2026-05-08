@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -225,6 +226,12 @@ class PlanResult:
     pending_tool: dict | None = None
 
 
+@dataclass
+class AgentEvent:
+    type: str   # thinking / tool_call / tool_result / text / confirmation / error / done
+    data: dict = field(default_factory=dict)
+
+
 class PlanningAgent:
     """DAG Planning Agent with ReAct Loop."""
 
@@ -378,64 +385,88 @@ class PlanningAgent:
                         tc["function"]["arguments"] = "{}"
                 messages.append(msg_dict)
 
+                # Phase 1: 解析所有 tool_calls
+                parsed_calls = []
                 for tool_call in message.tool_calls:
                     fn_name = tool_call.function.name
                     try:
                         fn_args = json.loads(tool_call.function.arguments)
                     except json.JSONDecodeError:
                         logger.warning(f"Invalid JSON in tool_call args for {fn_name}")
-                        tool_result = {"error": f"参数 JSON 格式错误，请重新调用 {fn_name}，确保参数是合法 JSON"}
+                        err = {"error": f"参数 JSON 格式错误，请重新调用 {fn_name}，确保参数是合法 JSON"}
                         tool_calls_log.append({
                             "iteration": iteration + 1,
                             "tool": fn_name,
                             "args": {"_raw": tool_call.function.arguments[:200]},
-                            "result": tool_result,
+                            "result": err,
                         })
                         messages.append({
                             "role": "tool",
                             "tool_call_id": tool_call.id,
-                            "content": json.dumps(tool_result, ensure_ascii=False),
+                            "content": json.dumps(err, ensure_ascii=False),
                         })
                         continue
+                    parsed_calls.append((tool_call, fn_name, fn_args))
 
-                    logger.info(f"Agent calling tool: {fn_name}", args=fn_args)
-                    tool_result = await self.tools.execute(fn_name, fn_args)
+                # Phase 2: 并行执行所有工具
+                if parsed_calls:
+                    async def _exec_one(tc, name, args):
+                        logger.info(f"Agent calling tool: {name}", args=args)
+                        res = await self.tools.execute(name, args)
+                        return tc, name, args, res
 
-                    tool_calls_log.append({
-                        "iteration": iteration + 1,
-                        "tool": fn_name,
-                        "args": fn_args,
-                        "result": tool_result,
-                    })
+                    tasks = [_exec_one(tc, n, a) for tc, n, a in parsed_calls]
+                    outcomes = await asyncio.gather(*tasks, return_exceptions=True)
 
-                    if tool_result.get("requires_confirmation"):
+                    # Phase 3: 处理结果
+                    pending_confirmation = None
+                    for outcome in outcomes:
+                        if isinstance(outcome, Exception):
+                            logger.warning(f"Tool execution exception: {outcome}")
+                            continue
+                        tc, fn_name, fn_args, tool_result = outcome
+
+                        tool_calls_log.append({
+                            "iteration": iteration + 1,
+                            "tool": fn_name,
+                            "args": fn_args,
+                            "result": tool_result,
+                        })
+
+                        if tool_result.get("requires_confirmation"):
+                            messages.append({
+                                "role": "tool",
+                                "tool_call_id": tc.id,
+                                "content": json.dumps({
+                                    "status": "waiting_confirmation",
+                                    "tool": fn_name,
+                                    "args": fn_args,
+                                    "message": tool_result["message"],
+                                }, ensure_ascii=False),
+                            })
+                            if not pending_confirmation:
+                                pending_confirmation = (tc, fn_name, fn_args)
+                            continue
+
+                        result_str = json.dumps(tool_result, ensure_ascii=False)
                         messages.append({
                             "role": "tool",
-                            "tool_call_id": tool_call.id,
-                            "content": json.dumps({
-                                "status": "waiting_confirmation",
-                                "tool": fn_name,
-                                "args": fn_args,
-                                "message": tool_result["message"],
-                            }, ensure_ascii=False),
+                            "tool_call_id": tc.id,
+                            "content": truncate_tool_result(result_str),
                         })
+
+                    if pending_confirmation:
+                        tc, fn_name, fn_args = pending_confirmation
                         result.success = True
                         result.yaml_text = f"操作 '{fn_name}' 需要您确认后才能执行。"
                         result.requires_confirmation = True
                         result.pending_tool = {
                             "tool": fn_name,
                             "args": fn_args,
-                            "tool_call_id": tool_call.id,
+                            "tool_call_id": tc.id,
                         }
                         result.iterations = iteration + 1
                         return result
-
-                    result_str = json.dumps(tool_result, ensure_ascii=False)
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "content": truncate_tool_result(result_str),
-                    })
 
                 if mode != "datafirst" and iteration + 1 >= self._nudge_threshold:
                     messages.append({
@@ -549,3 +580,205 @@ class PlanningAgent:
             return stripped
 
         return ""
+
+    # ── 流式路径 ──────────────────────────────────────────────
+
+    async def chat_stream(
+        self,
+        user_input: str,
+        session_id: str | None = None,
+        confirmed_tool: dict | None = None,
+    ) -> AsyncGenerator[AgentEvent, None]:
+        """有状态对话 — 流式版本。"""
+        mode = "datafirst"
+
+        if session_id:
+            session = await self.sessions.get(session_id)
+            if not session:
+                yield AgentEvent(type="error", data={"message": "会话已过期或不存在，请重新开始对话"})
+                return
+        else:
+            system_msgs = self._build_system_messages(user_input, mode)
+            session = await self.sessions.create(mode, system_msgs)
+
+        if confirmed_tool:
+            tool_result = await self.tools.execute(
+                confirmed_tool["tool"],
+                confirmed_tool["args"],
+                confirmed=True,
+            )
+            session.messages.append({
+                "role": "tool",
+                "tool_call_id": confirmed_tool.get("tool_call_id", "confirmed"),
+                "content": json.dumps(tool_result, ensure_ascii=False),
+            })
+        else:
+            session.messages.append({"role": "user", "content": user_input})
+
+        if session.needs_compact():
+            session.compact()
+
+        tool_calls_log: list[dict] = []
+        try:
+            async for event in self._react_loop_stream(
+                session.messages, mode, tool_calls_log,
+            ):
+                yield event
+        except asyncio.TimeoutError:
+            yield AgentEvent(type="error", data={"message": "对话处理超时，请重试。"})
+
+        session.tool_calls_log.extend(tool_calls_log)
+        await self.sessions.save(session)
+        yield AgentEvent(type="done", data={
+            "session_id": session.session_id,
+            "iterations": len(tool_calls_log),
+        })
+
+    async def _react_loop_stream(
+        self,
+        messages: list[dict[str, Any]],
+        mode: str,
+        tool_calls_log: list[dict],
+    ) -> AsyncGenerator[AgentEvent, None]:
+        """核心 ReAct 循环 — 流式版本（仅 datafirst 模式）。"""
+        if mode == "datafirst":
+            tool_schemas = self.tools.schemas(only=DATAFIRST_TOOLS) or None
+        else:
+            tool_schemas = self.tools.schemas() or None
+
+        for iteration in range(self.max_iterations):
+            logger.info(f"Stream iteration {iteration + 1}/{self.max_iterations}")
+
+            try:
+                response_stream = await self.llm.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    tools=tool_schemas,
+                    temperature=0.2,
+                    max_tokens=4096,
+                    stream=True,
+                )
+            except Exception as e:
+                yield AgentEvent(type="error", data={"message": f"LLM 调用失败: {e}"})
+                return
+
+            collected_content = ""
+            tool_call_chunks: dict[int, dict] = {}
+            finish_reason = None
+
+            async for chunk in response_stream:
+                choice = chunk.choices[0] if chunk.choices else None
+                if not choice:
+                    continue
+
+                finish_reason = choice.finish_reason
+                delta = choice.delta
+
+                if delta.content:
+                    collected_content += delta.content
+                    yield AgentEvent(type="thinking", data={
+                        "delta": delta.content,
+                        "content": collected_content,
+                    })
+
+                if delta.tool_calls:
+                    for tc_delta in delta.tool_calls:
+                        idx = tc_delta.index
+                        if idx not in tool_call_chunks:
+                            tool_call_chunks[idx] = {"id": "", "name": "", "arguments": ""}
+                        if tc_delta.id:
+                            tool_call_chunks[idx]["id"] = tc_delta.id
+                        if tc_delta.function:
+                            if tc_delta.function.name:
+                                tool_call_chunks[idx]["name"] = tc_delta.function.name
+                            if tc_delta.function.arguments:
+                                tool_call_chunks[idx]["arguments"] += tc_delta.function.arguments
+
+            # 处理收集到的 tool_calls
+            if tool_call_chunks:
+                assembled = []
+                for idx in sorted(tool_call_chunks.keys()):
+                    tc_info = tool_call_chunks[idx]
+                    try:
+                        fn_args = json.loads(tc_info["arguments"])
+                    except json.JSONDecodeError:
+                        fn_args = {}
+                    assembled.append((tc_info["id"], tc_info["name"], fn_args))
+
+                assistant_msg: dict[str, Any] = {"role": "assistant", "content": None, "tool_calls": []}
+                for tc_id, tc_name, tc_args in assembled:
+                    assistant_msg["tool_calls"].append({
+                        "id": tc_id,
+                        "type": "function",
+                        "function": {"name": tc_name, "arguments": json.dumps(tc_args, ensure_ascii=False)},
+                    })
+                    yield AgentEvent(type="tool_call", data={"tool": tc_name, "args": tc_args})
+                messages.append(assistant_msg)
+
+                # 并行执行工具
+                async def _exec(tc_id, name, args):
+                    res = await self.tools.execute(name, args)
+                    return tc_id, name, args, res
+
+                tasks = [_exec(tc_id, n, a) for tc_id, n, a in assembled]
+                outcomes = await asyncio.gather(*tasks, return_exceptions=True)
+
+                pending_confirmation = None
+                for outcome in outcomes:
+                    if isinstance(outcome, Exception):
+                        logger.warning(f"Stream tool exception: {outcome}")
+                        continue
+                    tc_id, fn_name, fn_args, tool_result = outcome
+
+                    tool_calls_log.append({
+                        "iteration": iteration + 1,
+                        "tool": fn_name,
+                        "args": fn_args,
+                        "result": tool_result,
+                    })
+
+                    if tool_result.get("requires_confirmation"):
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc_id,
+                            "content": json.dumps({
+                                "status": "waiting_confirmation",
+                                "tool": fn_name,
+                                "args": fn_args,
+                                "message": tool_result["message"],
+                            }, ensure_ascii=False),
+                        })
+                        if not pending_confirmation:
+                            pending_confirmation = (tc_id, fn_name, fn_args)
+                        continue
+
+                    result_str = json.dumps(tool_result, ensure_ascii=False)
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc_id,
+                        "content": truncate_tool_result(result_str),
+                    })
+                    yield AgentEvent(type="tool_result", data={
+                        "tool": fn_name,
+                        "result": tool_result,
+                    })
+
+                if pending_confirmation:
+                    tc_id, fn_name, fn_args = pending_confirmation
+                    yield AgentEvent(type="confirmation", data={
+                        "tool": fn_name,
+                        "args": fn_args,
+                        "tool_call_id": tc_id,
+                    })
+                    return
+                continue
+
+            # 文本输出
+            if collected_content:
+                messages.append({"role": "assistant", "content": collected_content})
+                yield AgentEvent(type="text", data={"content": collected_content})
+                if mode == "datafirst" and finish_reason == "stop":
+                    return
+                continue
+
+        yield AgentEvent(type="error", data={"message": "达到最大迭代次数，规划未完成"})

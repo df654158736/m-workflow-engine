@@ -351,6 +351,18 @@ body {
 .chat-tools .tool-name { color: #67e8f9; font-weight: 600; }
 .chat-tools .tool-ok { color: #6ee7b7; }
 .chat-tools .tool-err { color: #fca5a5; }
+.df-tool-card {
+  margin: 6px 0; padding: 6px 10px; border-radius: 6px; font-size: 12px;
+  border: 1px solid #374151; background: #0f172a; color: #94a3b8;
+}
+.df-tool-card.running { border-color: #3b82f6; }
+.df-tool-card.running .df-tc-icon { animation: typing 1.2s infinite ease-in-out; }
+.df-tool-card.done { border-color: #059669; }
+.df-tool-card.failed { border-color: #dc2626; }
+.df-tool-card code { color: #67e8f9; background: none; }
+.df-tool-card details summary { cursor: pointer; color: #6b7280; font-size: 11px; display: inline; }
+.df-tool-card pre { margin: 4px 0 0; color: #d1d5db; }
+.df-tc-status { color: #6b7280; font-size: 11px; }
 .chat-input-row {
   display: flex; gap: 8px; padding: 12px 16px; background: #1e293b; border-top: 1px solid #2d3748;
 }
@@ -1110,50 +1122,134 @@ async function sendDatafirst() {
   btn.disabled = true;
   document.getElementById('df-status').textContent = '思考中...';
 
-  // typing indicator
-  const typing = document.createElement('div');
-  typing.className = 'chat-msg agent';
-  typing.id = 'df-typing';
-  typing.innerHTML = '<div class="chat-typing"><span></span><span></span><span></span></div>';
-  document.getElementById('df-messages').appendChild(typing);
-  document.getElementById('df-messages').scrollTop = document.getElementById('df-messages').scrollHeight;
+  const body = { input: msg };
+  if (_dfSessionId) body.session_id = _dfSessionId;
 
   try {
-    const body = { input: msg };
-    if (_dfSessionId) body.session_id = _dfSessionId;
-
-    const resp = await fetch('/api/datafirst', {
+    const resp = await fetch('/api/datafirst/stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
-    const data = await resp.json();
 
-    typing.remove();
-
-    if (data.session_id) _dfSessionId = data.session_id;
-
-    if (data.requires_confirmation && data.pending_tool) {
-      const pt = data.pending_tool;
-      const argsPreview = JSON.stringify(pt.args, null, 2);
-      dfAddMsg('agent', data.response || `操作 "${pt.tool}" 需要您确认。`, data.tool_calls);
-      dfShowConfirmation(pt);
-      document.getElementById('df-status').textContent = '等待确认...';
-    } else if (data.success && data.response) {
-      dfAddMsg('agent', data.response, data.tool_calls);
-      document.getElementById('df-status').textContent = `就绪 — ${data.iterations} 轮推理，${(data.tool_calls||[]).length} 次工具调用`;
-    } else {
-      const errText = data.error || '规划失败';
-      dfAddMsg('agent', '⚠️ ' + errText, data.tool_calls);
-      document.getElementById('df-status').textContent = '出错了';
+    if (!resp.ok || !resp.body) {
+      return await _dfSendLegacy(body);
     }
+
+    await _dfConsumeStream(resp);
   } catch (e) {
-    typing.remove();
-    dfAddMsg('system', '❌ 请求失败: ' + e.message);
-    document.getElementById('df-status').textContent = '连接失败';
+    try { await _dfSendLegacy(body); } catch (e2) {
+      dfAddMsg('system', '❌ 请求失败: ' + e2.message);
+      document.getElementById('df-status').textContent = '连接失败';
+    }
   } finally {
     _dfBusy = false;
     btn.disabled = false;
+  }
+}
+
+async function _dfConsumeStream(resp) {
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  const agentDiv = document.createElement('div');
+  agentDiv.className = 'chat-msg agent';
+  const textSpan = document.createElement('span');
+  agentDiv.appendChild(textSpan);
+  const box = document.getElementById('df-messages');
+  box.appendChild(agentDiv);
+
+  let toolCards = {};
+  let fullText = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    const lines = buffer.split('\n');
+    buffer = lines.pop();
+
+    let evtType = null;
+    let evtData = null;
+    for (const line of lines) {
+      if (line.startsWith('event: ')) {
+        evtType = line.slice(7).trim();
+      } else if (line.startsWith('data: ') && evtType) {
+        try { evtData = JSON.parse(line.slice(6)); } catch { evtData = {}; }
+
+        switch (evtType) {
+          case 'thinking':
+            fullText = evtData.content || '';
+            textSpan.innerHTML = renderMarkdown(fullText);
+            document.getElementById('df-status').textContent = '思考中...';
+            break;
+          case 'tool_call': {
+            const cardId = 'tc-' + (evtData.tool || '') + '-' + Date.now();
+            const card = document.createElement('div');
+            card.className = 'df-tool-card running';
+            card.innerHTML = `<span class="df-tc-icon">⏳</span> <code>${evtData.tool}</code> <span class="df-tc-status">调用中...</span>`;
+            agentDiv.appendChild(card);
+            toolCards[evtData.tool] = card;
+            document.getElementById('df-status').textContent = `调用 ${evtData.tool}...`;
+            break;
+          }
+          case 'tool_result': {
+            const card = toolCards[evtData.tool];
+            if (card) {
+              const ok = !evtData.result?.error;
+              card.className = 'df-tool-card ' + (ok ? 'done' : 'failed');
+              const resultPreview = JSON.stringify(evtData.result, null, 2);
+              card.innerHTML = `<span class="df-tc-icon">${ok ? '✅' : '❌'}</span> <code>${evtData.tool}</code> <details><summary>${ok ? '完成' : '失败'}</summary><pre style="font-size:11px;max-height:120px;overflow:auto;">${resultPreview}</pre></details>`;
+            }
+            break;
+          }
+          case 'text':
+            fullText = evtData.content || '';
+            textSpan.innerHTML = renderMarkdown(fullText);
+            break;
+          case 'confirmation':
+            dfShowConfirmation({ tool: evtData.tool, args: evtData.args, tool_call_id: evtData.tool_call_id });
+            document.getElementById('df-status').textContent = '等待确认...';
+            break;
+          case 'done':
+            if (evtData.session_id) _dfSessionId = evtData.session_id;
+            document.getElementById('df-status').textContent = '就绪';
+            break;
+          case 'error':
+            dfAddMsg('system', '⚠️ ' + (evtData.message || '未知错误'));
+            document.getElementById('df-status').textContent = '出错了';
+            break;
+        }
+        evtType = null;
+        evtData = null;
+      }
+    }
+    box.scrollTop = box.scrollHeight;
+  }
+}
+
+async function _dfSendLegacy(body) {
+  const resp = await fetch('/api/datafirst', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const data = await resp.json();
+
+  if (data.session_id) _dfSessionId = data.session_id;
+
+  if (data.requires_confirmation && data.pending_tool) {
+    dfAddMsg('agent', data.response || `操作 "${data.pending_tool.tool}" 需要您确认。`, data.tool_calls);
+    dfShowConfirmation(data.pending_tool);
+    document.getElementById('df-status').textContent = '等待确认...';
+  } else if (data.success && data.response) {
+    dfAddMsg('agent', data.response, data.tool_calls);
+    document.getElementById('df-status').textContent = `就绪 — ${data.iterations} 轮推理，${(data.tool_calls||[]).length} 次工具调用`;
+  } else {
+    dfAddMsg('agent', '⚠️ ' + (data.error || '规划失败'), data.tool_calls);
+    document.getElementById('df-status').textContent = '出错了';
   }
 }
 
@@ -1181,8 +1277,8 @@ function dfShowConfirmation(pendingTool) {
 async function dfConfirmTool() {
   const pt = window._dfPendingTool;
   if (!pt) return;
-  const box = document.getElementById('df-confirm-box');
-  if (box) box.remove();
+  const confirmBox = document.getElementById('df-confirm-box');
+  if (confirmBox) confirmBox.remove();
   window._dfPendingTool = null;
 
   dfAddMsg('user', '✅ 确认执行');
@@ -1193,27 +1289,21 @@ async function dfConfirmTool() {
   try {
     const body = { confirmed_tool: pt, input: '' };
     if (_dfSessionId) body.session_id = _dfSessionId;
-    const resp = await fetch('/api/datafirst', {
+
+    const resp = await fetch('/api/datafirst/stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
-    const data = await resp.json();
-    if (data.session_id) _dfSessionId = data.session_id;
 
-    if (data.requires_confirmation && data.pending_tool) {
-      dfAddMsg('agent', data.response || '需要再次确认。', data.tool_calls);
-      dfShowConfirmation(data.pending_tool);
-      document.getElementById('df-status').textContent = '等待确认...';
-    } else if (data.success && data.response) {
-      dfAddMsg('agent', data.response, data.tool_calls);
-      document.getElementById('df-status').textContent = `就绪 — ${data.iterations} 轮推理`;
-    } else {
-      dfAddMsg('agent', '⚠️ ' + (data.error || '执行失败'), data.tool_calls);
-      document.getElementById('df-status').textContent = '出错了';
+    if (!resp.ok || !resp.body) {
+      return await _dfSendLegacy(body);
     }
+    await _dfConsumeStream(resp);
   } catch (e) {
-    dfAddMsg('system', '❌ 请求失败: ' + e.message);
+    try { await _dfSendLegacy({ confirmed_tool: pt, input: '', session_id: _dfSessionId }); } catch (e2) {
+      dfAddMsg('system', '❌ 请求失败: ' + e2.message);
+    }
   } finally {
     _dfBusy = false;
     document.getElementById('df-send-btn').disabled = false;
@@ -1221,26 +1311,25 @@ async function dfConfirmTool() {
 }
 
 async function dfRejectTool() {
-  const box = document.getElementById('df-confirm-box');
-  if (box) box.remove();
+  const confirmBox = document.getElementById('df-confirm-box');
+  if (confirmBox) confirmBox.remove();
   window._dfPendingTool = null;
 
   dfAddMsg('user', '❌ 拒绝执行');
   document.getElementById('df-status').textContent = '就绪';
 
-  // 发送拒绝消息让 Agent 知道
   const body = { input: '用户拒绝了该写操作，请不要执行，继续对话。' };
   if (_dfSessionId) body.session_id = _dfSessionId;
   try {
-    const resp = await fetch('/api/datafirst', {
+    const resp = await fetch('/api/datafirst/stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
-    const data = await resp.json();
-    if (data.session_id) _dfSessionId = data.session_id;
-    if (data.success && data.response) {
-      dfAddMsg('agent', data.response, data.tool_calls);
+    if (resp.ok && resp.body) {
+      await _dfConsumeStream(resp);
+    } else {
+      await _dfSendLegacy(body);
     }
   } catch (e) {
     // 拒绝失败不影响用户体验

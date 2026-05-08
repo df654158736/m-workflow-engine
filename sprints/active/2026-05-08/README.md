@@ -7,7 +7,8 @@
 
 | Wave | 范围 | 状态 |
 |------|------|------|
-| wave1 | P0: Session 持久化 + 写操作拦截 + 工具超时 | Active |
+| wave1 | P0: Session 持久化 + 写操作拦截 + 工具超时 | Done |
+| wave2 | P1: 流式响应（SSE） + 并行工具调用 | Active |
 
 ## Participants
 
