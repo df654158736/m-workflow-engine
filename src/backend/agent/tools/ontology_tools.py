@@ -61,6 +61,7 @@ async def list_object_types(keyword: str = "") -> dict:
         "创建一个新的 ObjectType（本体对象类型）及其属性，并自动定稿发布。这是写操作，调用前应让用户确认方案。"
         "如果从数据库表创建，必须提供 datasource_id 和 table_name，每个属性必须包含 source_column。"
     ),
+    requires_confirmation=True,
     parameters={
         "type": "object",
         "properties": {
@@ -299,6 +300,7 @@ async def get_object_type_detail(type_name: str) -> dict:
         "向已有 ObjectType 添加缺失的属性。用于补全半成品（如 EDITING/DRAFT 状态下属性不全的 ObjectType）。"
         "每次调用添加一个属性。如需添加多个，请多次调用。"
     ),
+    requires_confirmation=True,
     parameters={
         "type": "object",
         "properties": {
@@ -380,6 +382,7 @@ async def update_object_type_properties(
         "将处于 EDITING 或 DRAFT 状态的 ObjectType 定稿并发布为 ACTIVE。"
         "EDITING → finalize → DRAFT → publish → ACTIVE。如已是 DRAFT 则跳过 finalize 直接 publish。"
     ),
+    requires_confirmation=True,
     parameters={
         "type": "object",
         "properties": {
@@ -441,6 +444,7 @@ async def finalize_and_publish(type_name: str) -> dict:
         "删除一个 ObjectType 及其所有关联资源（属性、数据映射、Pipeline、编织任务）。"
         "⚠️ 这是不可逆的写操作，调用前必须向用户确认。cascade=true 时会同时删除关联的关系类型。"
     ),
+    requires_confirmation=True,
     parameters={
         "type": "object",
         "properties": {

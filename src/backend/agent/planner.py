@@ -15,6 +15,7 @@ Session 模式（datafirst）：
 
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from dataclasses import dataclass, field
@@ -207,6 +208,9 @@ DATAFIRST_PROMPT_TEMPLATE = """你是一个数据接入助手 Agent。用户用�
 """
 
 
+_REACT_LOOP_TIMEOUT_SECONDS = 120
+
+
 @dataclass
 class PlanResult:
     success: bool
@@ -217,6 +221,8 @@ class PlanResult:
     iterations: int = 0
     tool_calls_log: list[dict] = field(default_factory=list)
     thinking_log: list[str] = field(default_factory=list)
+    requires_confirmation: bool = False
+    pending_tool: dict | None = None
 
 
 class PlanningAgent:
@@ -263,16 +269,22 @@ class PlanningAgent:
         messages = system_msgs + [{"role": "user", "content": user_input}]
         return await self._react_loop(messages, mode, tool_calls_log=[])
 
-    async def chat(self, user_input: str, session_id: str | None = None) -> PlanResult:
+    async def chat(
+        self,
+        user_input: str,
+        session_id: str | None = None,
+        confirmed_tool: dict | None = None,
+    ) -> PlanResult:
         """有状态对话（datafirst 模式使用）。
 
         session_id 为空时创建新 Session；
         有值时追加用户消息到已有 Session 继续。
+        confirmed_tool: 用户确认执行的工具 {"tool": "xxx", "args": {...}}
         """
         mode = "datafirst"
 
         if session_id:
-            session = self.sessions.get(session_id)
+            session = await self.sessions.get(session_id)
             if not session:
                 return PlanResult(
                     success=False,
@@ -280,20 +292,42 @@ class PlanningAgent:
                 )
         else:
             system_msgs = self._build_system_messages(user_input, mode)
-            session = self.sessions.create(mode, system_msgs)
+            session = await self.sessions.create(mode, system_msgs)
 
-        session.messages.append({"role": "user", "content": user_input})
+        if confirmed_tool:
+            tool_result = await self.tools.execute(
+                confirmed_tool["tool"],
+                confirmed_tool["args"],
+                confirmed=True,
+            )
+            session.messages.append({
+                "role": "tool",
+                "tool_call_id": confirmed_tool.get("tool_call_id", "confirmed"),
+                "content": json.dumps(tool_result, ensure_ascii=False),
+            })
+        else:
+            session.messages.append({"role": "user", "content": user_input})
 
         if session.needs_compact():
             session.compact()
 
         turn_tool_calls: list[dict] = []
-        result = await self._react_loop(
-            session.messages,
-            mode,
-            tool_calls_log=turn_tool_calls,
-        )
+        try:
+            result = await asyncio.wait_for(
+                self._react_loop(
+                    session.messages,
+                    mode,
+                    tool_calls_log=turn_tool_calls,
+                ),
+                timeout=_REACT_LOOP_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            result = PlanResult(
+                success=False,
+                errors=["对话处理超时，请重试。可能是下游服务响应过慢。"],
+            )
         session.tool_calls_log.extend(turn_tool_calls)
+        await self.sessions.save(session)
         result.tool_calls_log = turn_tool_calls
         result.session_id = session.session_id
         return result
@@ -373,6 +407,28 @@ class PlanningAgent:
                         "args": fn_args,
                         "result": tool_result,
                     })
+
+                    if tool_result.get("requires_confirmation"):
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "content": json.dumps({
+                                "status": "waiting_confirmation",
+                                "tool": fn_name,
+                                "args": fn_args,
+                                "message": tool_result["message"],
+                            }, ensure_ascii=False),
+                        })
+                        result.success = True
+                        result.yaml_text = f"操作 '{fn_name}' 需要您确认后才能执行。"
+                        result.requires_confirmation = True
+                        result.pending_tool = {
+                            "tool": fn_name,
+                            "args": fn_args,
+                            "tool_call_id": tool_call.id,
+                        }
+                        result.iterations = iteration + 1
+                        return result
 
                     result_str = json.dumps(tool_result, ensure_ascii=False)
                     messages.append({

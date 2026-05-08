@@ -15,6 +15,7 @@ from backend.agent.api_client import get_project_id, api_get, api_post, ApiError
 @tool(
     name="create_fabric_task",
     description="创建数据编织任务。将数据源的表选入任务，后续可做 AI 分析、字段映射、Pipeline 生成。写操作，调用前应让用户确认。",
+    requires_confirmation=True,
     parameters={
         "type": "object",
         "properties": {
@@ -182,6 +183,7 @@ async def get_field_mappings(task_id: str, compare_result_id: str) -> dict:
 @tool(
     name="generate_pipeline",
     description="根据数据编织任务的字段映射生成 Pipeline DSL（YAML 格式）。写操作前应让用户确认。",
+    requires_confirmation=True,
     parameters={
         "type": "object",
         "properties": {

@@ -511,9 +511,11 @@ async def datafirst_agent(payload: dict[str, Any]):
 
     首次请求不带 session_id → 创建新 Session
     后续请求带 session_id → 追加到已有 Session 继续
+    confirmed_tool: 用户确认的写操作 {"tool": "xxx", "args": {...}, "tool_call_id": "..."}
     """
+    confirmed_tool = payload.get("confirmed_tool")
     user_input = payload.get("input", "")
-    if not user_input:
+    if not user_input and not confirmed_tool:
         raise HTTPException(400, "input is required")
 
     if STANDALONE_MODE:
@@ -523,9 +525,13 @@ async def datafirst_agent(payload: dict[str, Any]):
         raise HTTPException(500, "Planning Agent not initialized (check LLM config)")
 
     session_id = payload.get("session_id")
-    plan_result = await _planning_agent.chat(user_input, session_id=session_id)
+    plan_result = await _planning_agent.chat(
+        user_input or "",
+        session_id=session_id,
+        confirmed_tool=confirmed_tool,
+    )
 
-    return {
+    resp = {
         "success": plan_result.success,
         "session_id": plan_result.session_id,
         "response": plan_result.yaml_text if plan_result.success else "",
@@ -533,6 +539,10 @@ async def datafirst_agent(payload: dict[str, Any]):
         "iterations": plan_result.iterations,
         "tool_calls": plan_result.tool_calls_log,
     }
+    if plan_result.requires_confirmation:
+        resp["requires_confirmation"] = True
+        resp["pending_tool"] = plan_result.pending_tool
+    return resp
 
 
 @app.get("/api/workflows")

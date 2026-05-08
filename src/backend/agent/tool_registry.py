@@ -6,10 +6,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
 from dataclasses import dataclass, field
 from typing import Any, Callable, Awaitable
+
+_TOOL_TIMEOUT_SECONDS = 60
 
 
 @dataclass
@@ -18,6 +21,7 @@ class ToolDefinition:
     description: str
     parameters: dict[str, Any]
     handler: Callable[..., Awaitable[dict]]
+    requires_confirmation: bool = False
 
 
 class ToolRegistry:
@@ -54,14 +58,28 @@ class ToolRegistry:
             })
         return result
 
-    async def execute(self, name: str, arguments: dict[str, Any]) -> dict:
+    async def execute(
+        self, name: str, arguments: dict[str, Any], confirmed: bool = False,
+    ) -> dict:
         """执行指定工具，返回结果 dict。"""
         defn = self._tools.get(name)
         if not defn:
             return {"error": f"Unknown tool: {name}"}
+        if defn.requires_confirmation and not confirmed:
+            return {
+                "requires_confirmation": True,
+                "tool": name,
+                "args": arguments,
+                "message": f"工具 '{name}' 是写操作，需要用户确认后才能执行。",
+            }
         try:
-            result = await defn.handler(**arguments)
+            result = await asyncio.wait_for(
+                defn.handler(**arguments),
+                timeout=_TOOL_TIMEOUT_SECONDS,
+            )
             return result
+        except asyncio.TimeoutError:
+            return {"error": f"工具 '{name}' 执行超时（{_TOOL_TIMEOUT_SECONDS}s），请稍后重试或检查下游服务。"}
         except Exception as e:
             return {"error": f"Tool '{name}' failed: {str(e)}"}
 
@@ -70,7 +88,12 @@ class ToolRegistry:
 _registry = ToolRegistry()
 
 
-def tool(name: str, description: str, parameters: dict[str, Any] | None = None):
+def tool(
+    name: str,
+    description: str,
+    parameters: dict[str, Any] | None = None,
+    requires_confirmation: bool = False,
+):
     """装饰器：注册一个 Agent Tool。
 
     Usage:
@@ -87,6 +110,7 @@ def tool(name: str, description: str, parameters: dict[str, Any] | None = None):
             description=description,
             parameters=params,
             handler=fn,
+            requires_confirmation=requires_confirmation,
         ))
         return fn
     return decorator

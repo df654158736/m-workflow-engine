@@ -1133,7 +1133,13 @@ async function sendDatafirst() {
 
     if (data.session_id) _dfSessionId = data.session_id;
 
-    if (data.success && data.response) {
+    if (data.requires_confirmation && data.pending_tool) {
+      const pt = data.pending_tool;
+      const argsPreview = JSON.stringify(pt.args, null, 2);
+      dfAddMsg('agent', data.response || `操作 "${pt.tool}" 需要您确认。`, data.tool_calls);
+      dfShowConfirmation(pt);
+      document.getElementById('df-status').textContent = '等待确认...';
+    } else if (data.success && data.response) {
       dfAddMsg('agent', data.response, data.tool_calls);
       document.getElementById('df-status').textContent = `就绪 — ${data.iterations} 轮推理，${(data.tool_calls||[]).length} 次工具调用`;
     } else {
@@ -1148,6 +1154,96 @@ async function sendDatafirst() {
   } finally {
     _dfBusy = false;
     btn.disabled = false;
+  }
+}
+
+function dfShowConfirmation(pendingTool) {
+  const container = document.getElementById('df-messages');
+  const div = document.createElement('div');
+  div.className = 'chat-msg system';
+  div.id = 'df-confirm-box';
+  div.innerHTML = `
+    <div style="background:#fff3cd;border:1px solid #ffc107;border-radius:8px;padding:12px;margin:4px 0;">
+      <b>⚠️ 写操作确认</b><br>
+      工具: <code>${pendingTool.tool}</code><br>
+      <details><summary>参数详情</summary><pre style="font-size:11px;max-height:120px;overflow:auto;">${JSON.stringify(pendingTool.args, null, 2)}</pre></details>
+      <div style="margin-top:8px;">
+        <button onclick="dfConfirmTool()" style="background:#28a745;color:#fff;border:none;padding:6px 16px;border-radius:4px;cursor:pointer;margin-right:8px;">确认执行</button>
+        <button onclick="dfRejectTool()" style="background:#dc3545;color:#fff;border:none;padding:6px 16px;border-radius:4px;cursor:pointer;">拒绝</button>
+      </div>
+    </div>
+  `;
+  container.appendChild(div);
+  container.scrollTop = container.scrollHeight;
+  window._dfPendingTool = pendingTool;
+}
+
+async function dfConfirmTool() {
+  const pt = window._dfPendingTool;
+  if (!pt) return;
+  const box = document.getElementById('df-confirm-box');
+  if (box) box.remove();
+  window._dfPendingTool = null;
+
+  dfAddMsg('user', '✅ 确认执行');
+  _dfBusy = true;
+  document.getElementById('df-send-btn').disabled = true;
+  document.getElementById('df-status').textContent = '执行中...';
+
+  try {
+    const body = { confirmed_tool: pt, input: '' };
+    if (_dfSessionId) body.session_id = _dfSessionId;
+    const resp = await fetch('/api/datafirst', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await resp.json();
+    if (data.session_id) _dfSessionId = data.session_id;
+
+    if (data.requires_confirmation && data.pending_tool) {
+      dfAddMsg('agent', data.response || '需要再次确认。', data.tool_calls);
+      dfShowConfirmation(data.pending_tool);
+      document.getElementById('df-status').textContent = '等待确认...';
+    } else if (data.success && data.response) {
+      dfAddMsg('agent', data.response, data.tool_calls);
+      document.getElementById('df-status').textContent = `就绪 — ${data.iterations} 轮推理`;
+    } else {
+      dfAddMsg('agent', '⚠️ ' + (data.error || '执行失败'), data.tool_calls);
+      document.getElementById('df-status').textContent = '出错了';
+    }
+  } catch (e) {
+    dfAddMsg('system', '❌ 请求失败: ' + e.message);
+  } finally {
+    _dfBusy = false;
+    document.getElementById('df-send-btn').disabled = false;
+  }
+}
+
+async function dfRejectTool() {
+  const box = document.getElementById('df-confirm-box');
+  if (box) box.remove();
+  window._dfPendingTool = null;
+
+  dfAddMsg('user', '❌ 拒绝执行');
+  document.getElementById('df-status').textContent = '就绪';
+
+  // 发送拒绝消息让 Agent 知道
+  const body = { input: '用户拒绝了该写操作，请不要执行，继续对话。' };
+  if (_dfSessionId) body.session_id = _dfSessionId;
+  try {
+    const resp = await fetch('/api/datafirst', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await resp.json();
+    if (data.session_id) _dfSessionId = data.session_id;
+    if (data.success && data.response) {
+      dfAddMsg('agent', data.response, data.tool_calls);
+    }
+  } catch (e) {
+    // 拒绝失败不影响用户体验
   }
 }
 
