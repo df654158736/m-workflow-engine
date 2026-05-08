@@ -148,6 +148,13 @@ async def startup():
         await ensure_workers()
 
 
+@app.on_event("shutdown")
+async def shutdown():
+    store = get_session_store()
+    await store.close()
+    logger.info("SessionStore closed")
+
+
 # --- API Routes ---
 
 _llm_client: Any = None

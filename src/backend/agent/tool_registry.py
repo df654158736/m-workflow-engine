@@ -12,6 +12,8 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Callable, Awaitable
 
+from pydantic import BaseModel, ValidationError
+
 _TOOL_TIMEOUT_SECONDS = 60
 
 
@@ -22,6 +24,7 @@ class ToolDefinition:
     parameters: dict[str, Any]
     handler: Callable[..., Awaitable[dict]]
     requires_confirmation: bool = False
+    args_model: type[BaseModel] | None = None
 
 
 class ToolRegistry:
@@ -65,6 +68,16 @@ class ToolRegistry:
         defn = self._tools.get(name)
         if not defn:
             return {"error": f"Unknown tool: {name}"}
+        if defn.args_model:
+            try:
+                validated = defn.args_model.model_validate(arguments)
+                arguments = validated.model_dump()
+            except ValidationError as e:
+                errors = [f"{err['loc']}: {err['msg']}" for err in e.errors()]
+                return {
+                    "error": f"参数校验失败: {'; '.join(errors)}",
+                    "hint": f"请检查 '{name}' 的参数格式后重新调用。",
+                }
         if defn.requires_confirmation and not confirmed:
             return {
                 "requires_confirmation": True,
@@ -93,6 +106,7 @@ def tool(
     description: str,
     parameters: dict[str, Any] | None = None,
     requires_confirmation: bool = False,
+    args_model: type[BaseModel] | None = None,
 ):
     """装饰器：注册一个 Agent Tool。
 
@@ -111,6 +125,7 @@ def tool(
             parameters=params,
             handler=fn,
             requires_confirmation=requires_confirmation,
+            args_model=args_model,
         ))
         return fn
     return decorator

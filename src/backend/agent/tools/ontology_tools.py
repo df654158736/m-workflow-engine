@@ -8,8 +8,38 @@ T9:  update_object_type_properties — 补全/修改已有 ObjectType 的属性
 T10: finalize_and_publish — 定稿并发布处于 EDITING/DRAFT 状态的 ObjectType
 """
 
+from pydantic import BaseModel, Field
+
 from backend.agent.tool_registry import tool
 from backend.agent.api_client import get_project_id, api_get, api_post, api_put, api_delete, ApiError
+
+
+class CreateObjectTypeArgs(BaseModel):
+    type_name: str = Field(..., min_length=1, description="PascalCase 英文名")
+    display_name: str = Field(..., min_length=1, description="中文显示名")
+    description: str = ""
+    datasource_id: str = ""
+    table_name: str = ""
+    properties_json: str = "[]"
+
+
+class UpdateObjectTypePropertiesArgs(BaseModel):
+    type_name: str = Field(..., min_length=1)
+    property_name: str = Field(..., min_length=1)
+    display_name: str = Field(..., min_length=1)
+    property_type: str = Field(default="String", pattern=r"^(String|Integer|Double|Boolean|Date|Timestamp|Json)$")
+    required: bool = False
+    is_primary_key: bool = False
+    source_column: str = ""
+
+
+class FinalizeAndPublishArgs(BaseModel):
+    type_name: str = Field(..., min_length=1)
+
+
+class DeleteObjectTypeArgs(BaseModel):
+    type_name: str = Field(..., min_length=1)
+    cascade: bool = True
 
 
 @tool(
@@ -62,6 +92,7 @@ async def list_object_types(keyword: str = "") -> dict:
         "如果从数据库表创建，必须提供 datasource_id 和 table_name，每个属性必须包含 source_column。"
     ),
     requires_confirmation=True,
+    args_model=CreateObjectTypeArgs,
     parameters={
         "type": "object",
         "properties": {
@@ -301,6 +332,7 @@ async def get_object_type_detail(type_name: str) -> dict:
         "每次调用添加一个属性。如需添加多个，请多次调用。"
     ),
     requires_confirmation=True,
+    args_model=UpdateObjectTypePropertiesArgs,
     parameters={
         "type": "object",
         "properties": {
@@ -383,6 +415,7 @@ async def update_object_type_properties(
         "EDITING → finalize → DRAFT → publish → ACTIVE。如已是 DRAFT 则跳过 finalize 直接 publish。"
     ),
     requires_confirmation=True,
+    args_model=FinalizeAndPublishArgs,
     parameters={
         "type": "object",
         "properties": {
@@ -445,6 +478,7 @@ async def finalize_and_publish(type_name: str) -> dict:
         "⚠️ 这是不可逆的写操作，调用前必须向用户确认。cascade=true 时会同时删除关联的关系类型。"
     ),
     requires_confirmation=True,
+    args_model=DeleteObjectTypeArgs,
     parameters={
         "type": "object",
         "properties": {

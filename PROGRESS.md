@@ -1,7 +1,7 @@
 # Project Progress Tracker
 
 > **Project**: Workflow Engine Demo
-> **Last Updated**: 2026-05-07
+> **Last Updated**: 2026-05-08
 
 ---
 
@@ -33,6 +33,7 @@
 
 ## Recently Completed
 
+- 2026-05-08: Agent 生产化加固 P2 — LLM 重试 + Token 跟踪 + Graceful shutdown + Pydantic Guard Rails + Plan-then-Execute (dingang)
 - 2026-05-08: Session 历史记录恢复 — 后端历史查询端点 + 前端 localStorage 持久化 + 页面刷新回填 (dingang)
 - 2026-05-08: Agent 生产化加固 P1 — 流式响应（SSE）+ 并行工具调用 (dingang)
 - 2026-05-08: Agent 生产化加固 P0 — Session SQLite 持久化 + 写操作代码层拦截 + 工具超时保护 (dingang)
@@ -46,4 +47,4 @@
 
 | Who | What | Branch | Status |
 |-----|------|--------|--------|
-| dingang | Agent 生产化加固 P1 | feature/agent-production-hardening | Done |
+| dingang | Agent 生产化加固 Wave4 (P2) | feature/agent-production-hardening | In Progress |

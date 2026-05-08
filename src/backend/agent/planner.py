@@ -198,6 +198,25 @@ DATAFIRST_PROMPT_TEMPLATE = """你是一个数据接入助手 Agent。用户用�
 3. **错误恢复** — API 报错时，向用户说明原因并给出替代方案
 4. **已有资源复用** — 操作前先查询已有资源，避免重复创建
 
+## 复杂任务规划（Plan-then-Execute）
+
+当用户的需求涉及多步骤操作时（如"帮我接入这3张表"、"批量创建本体"），你必须：
+
+1. **先规划再执行** — 列出完整的执行计划（要操作哪些表/本体、每步做什么），让用户确认后再逐步执行
+2. **计划格式** — 用编号列表展示，标注每步涉及的工具和预期结果：
+   ```
+   执行计划：
+   1. 扫描表 A 的列结构 → scan_table_columns
+   2. 扫描表 B 的列结构 → scan_table_columns
+   3. 设计 ObjectType X（基于表 A）→ 展示方案
+   4. 设计 ObjectType Y（基于表 B）→ 展示方案
+   5. 用户确认后依次创建
+   ```
+3. **分批确认** — 查询类工具可以批量执行无需逐一确认；写操作在展示完整方案后一次确认
+4. **进度播报** — 每完成一个主要步骤，简要汇报进度（如"已完成 2/5：表 A 结构已扫描"）
+
+对于简单的单步需求（如"查一下有哪些数据源"），直接执行即可，不需要规划。
+
 ## 回复风格
 
 - 简洁明了，不要长篇大论
@@ -210,6 +229,8 @@ DATAFIRST_PROMPT_TEMPLATE = """你是一个数据接入助手 Agent。用户用�
 
 
 _REACT_LOOP_TIMEOUT_SECONDS = 120
+_LLM_MAX_RETRIES = 3
+_LLM_RETRY_BASE_DELAY = 1.0
 
 
 @dataclass
@@ -224,6 +245,7 @@ class PlanResult:
     thinking_log: list[str] = field(default_factory=list)
     requires_confirmation: bool = False
     pending_tool: dict | None = None
+    tokens_used: int = 0
 
 
 @dataclass
@@ -251,6 +273,30 @@ class PlanningAgent:
         self.sessions = get_session_store()
         self.max_iterations = max_iterations
         self._nudge_threshold = 3
+
+    async def _llm_call(self, messages, tool_schemas, stream=False):
+        """LLM 调用，带指数退避重试。"""
+        last_exc = None
+        for attempt in range(_LLM_MAX_RETRIES):
+            try:
+                kwargs = dict(
+                    model=self.model,
+                    messages=messages,
+                    tools=tool_schemas,
+                    temperature=0.2,
+                    max_tokens=4096,
+                    stream=stream,
+                )
+                if stream:
+                    kwargs["stream_options"] = {"include_usage": True}
+                return await self.llm.chat.completions.create(**kwargs)
+            except Exception as e:
+                last_exc = e
+                if attempt < _LLM_MAX_RETRIES - 1:
+                    delay = _LLM_RETRY_BASE_DELAY * (2 ** attempt)
+                    logger.warning(f"LLM call failed (attempt {attempt + 1}/{_LLM_MAX_RETRIES}), retrying in {delay}s: {e}")
+                    await asyncio.sleep(delay)
+        raise last_exc
 
     def _build_system_messages(self, user_input: str, mode: str) -> list[dict[str, Any]]:
         """构建 system prompt messages。"""
@@ -334,9 +380,11 @@ class PlanningAgent:
                 errors=["对话处理超时，请重试。可能是下游服务响应过慢。"],
             )
         session.tool_calls_log.extend(turn_tool_calls)
+        session.total_tokens += result.tokens_used
         await self.sessions.save(session)
         result.tool_calls_log = turn_tool_calls
         result.session_id = session.session_id
+        result.tokens_used = session.total_tokens
         return result
 
     async def _react_loop(
@@ -359,17 +407,14 @@ class PlanningAgent:
             logger.info(f"Planning iteration {iteration + 1}/{self.max_iterations}")
 
             try:
-                response = await self.llm.chat.completions.create(
-                    model=self.model,
-                    messages=messages,
-                    tools=tool_schemas,
-                    temperature=0.2,
-                    max_tokens=4096,
-                )
+                response = await self._llm_call(messages, tool_schemas, stream=False)
             except Exception as e:
-                logger.warning(f"LLM call failed: {e}")
+                logger.warning(f"LLM call failed after {_LLM_MAX_RETRIES} retries: {e}")
                 result.errors = [f"LLM 调用失败: {str(e)}"]
                 return result
+
+            if response.usage:
+                result.tokens_used += response.usage.total_tokens
 
             choice = response.choices[0]
             message = choice.message
@@ -632,19 +677,22 @@ class PlanningAgent:
             session.compact()
 
         tool_calls_log: list[dict] = []
+        token_counter = [0]
         try:
             async for event in self._react_loop_stream(
-                session.messages, mode, tool_calls_log,
+                session.messages, mode, tool_calls_log, token_counter,
             ):
                 yield event
         except asyncio.TimeoutError:
             yield AgentEvent(type="error", data={"message": "对话处理超时，请重试。"})
 
         session.tool_calls_log.extend(tool_calls_log)
+        session.total_tokens += token_counter[0]
         await self.sessions.save(session)
         yield AgentEvent(type="done", data={
             "session_id": session.session_id,
             "iterations": len(tool_calls_log),
+            "total_tokens": session.total_tokens,
         })
 
     async def _react_loop_stream(
@@ -652,6 +700,7 @@ class PlanningAgent:
         messages: list[dict[str, Any]],
         mode: str,
         tool_calls_log: list[dict],
+        token_counter: list[int] | None = None,
     ) -> AsyncGenerator[AgentEvent, None]:
         """核心 ReAct 循环 — 流式版本（仅 datafirst 模式）。"""
         if mode == "datafirst":
@@ -663,16 +712,9 @@ class PlanningAgent:
             logger.info(f"Stream iteration {iteration + 1}/{self.max_iterations}")
 
             try:
-                response_stream = await self.llm.chat.completions.create(
-                    model=self.model,
-                    messages=messages,
-                    tools=tool_schemas,
-                    temperature=0.2,
-                    max_tokens=4096,
-                    stream=True,
-                )
+                response_stream = await self._llm_call(messages, tool_schemas, stream=True)
             except Exception as e:
-                yield AgentEvent(type="error", data={"message": f"LLM 调用失败: {e}"})
+                yield AgentEvent(type="error", data={"message": f"LLM 调用失败（重试 {_LLM_MAX_RETRIES} 次后）: {e}"})
                 return
 
             collected_content = ""
@@ -680,6 +722,9 @@ class PlanningAgent:
             finish_reason = None
 
             async for chunk in response_stream:
+                if hasattr(chunk, "usage") and chunk.usage:
+                    if token_counter is not None:
+                        token_counter[0] += chunk.usage.total_tokens
                 choice = chunk.choices[0] if chunk.choices else None
                 if not choice:
                     continue

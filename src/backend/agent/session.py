@@ -53,6 +53,7 @@ class Session:
     tool_calls_log: list[dict] = field(default_factory=list)
     created_at: float = field(default_factory=time.time)
     last_active: float = field(default_factory=time.time)
+    total_tokens: int = 0
 
     def touch(self) -> None:
         self.last_active = time.time()
@@ -143,6 +144,10 @@ class SessionStore:
             self._db = await aiosqlite.connect(str(self._db_path))
             await self._db.execute("PRAGMA journal_mode=WAL")
             await self._db.execute(_CREATE_TABLE_SQL)
+            try:
+                await self._db.execute("ALTER TABLE sessions ADD COLUMN total_tokens INTEGER NOT NULL DEFAULT 0")
+            except Exception:
+                pass
             await self._db.commit()
         return self._db
 
@@ -158,8 +163,8 @@ class SessionStore:
         )
         db = await self._get_db()
         await db.execute(
-            "INSERT INTO sessions (session_id, mode, messages, tool_calls_log, created_at, last_active) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO sessions (session_id, mode, messages, tool_calls_log, created_at, last_active, total_tokens) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
                 session_id,
                 mode,
@@ -167,6 +172,7 @@ class SessionStore:
                 "[]",
                 now,
                 now,
+                0,
             ),
         )
         await db.commit()
@@ -177,7 +183,7 @@ class SessionStore:
     async def get(self, session_id: str) -> Session | None:
         db = await self._get_db()
         async with db.execute(
-            "SELECT session_id, mode, messages, tool_calls_log, created_at, last_active "
+            "SELECT session_id, mode, messages, tool_calls_log, created_at, last_active, total_tokens "
             "FROM sessions WHERE session_id = ?",
             (session_id,),
         ) as cursor:
@@ -192,6 +198,7 @@ class SessionStore:
             tool_calls_log=json.loads(row[3]),
             created_at=row[4],
             last_active=row[5],
+            total_tokens=row[6] if len(row) > 6 else 0,
         )
         if session.expired:
             await self.delete(session_id)
@@ -204,12 +211,13 @@ class SessionStore:
     async def save(self, session: Session) -> None:
         db = await self._get_db()
         await db.execute(
-            "UPDATE sessions SET messages = ?, tool_calls_log = ?, last_active = ? "
+            "UPDATE sessions SET messages = ?, tool_calls_log = ?, last_active = ?, total_tokens = ? "
             "WHERE session_id = ?",
             (
                 json.dumps(session.messages, ensure_ascii=False),
                 json.dumps(session.tool_calls_log, ensure_ascii=False),
                 session.last_active,
+                session.total_tokens,
                 session.session_id,
             ),
         )
