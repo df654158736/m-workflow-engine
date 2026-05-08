@@ -420,9 +420,22 @@ class PlanningAgent:
 
                     # Phase 3: 处理结果
                     pending_confirmation = None
-                    for outcome in outcomes:
+                    for i, outcome in enumerate(outcomes):
                         if isinstance(outcome, Exception):
-                            logger.warning(f"Tool execution exception: {outcome}")
+                            orig_tc, orig_name, orig_args = parsed_calls[i]
+                            logger.warning(f"Tool execution exception: {orig_name}: {outcome}")
+                            err_result = {"error": f"工具 '{orig_name}' 执行异常: {outcome}"}
+                            tool_calls_log.append({
+                                "iteration": iteration + 1,
+                                "tool": orig_name,
+                                "args": orig_args,
+                                "result": err_result,
+                            })
+                            messages.append({
+                                "role": "tool",
+                                "tool_call_id": orig_tc.id,
+                                "content": json.dumps(err_result, ensure_ascii=False),
+                            })
                             continue
                         tc, fn_name, fn_args, tool_result = outcome
 
@@ -724,9 +737,26 @@ class PlanningAgent:
                 outcomes = await asyncio.gather(*tasks, return_exceptions=True)
 
                 pending_confirmation = None
-                for outcome in outcomes:
+                for i, outcome in enumerate(outcomes):
                     if isinstance(outcome, Exception):
-                        logger.warning(f"Stream tool exception: {outcome}")
+                        orig_id, orig_name, orig_args = assembled[i]
+                        logger.warning(f"Stream tool exception: {orig_name}: {outcome}")
+                        err_result = {"error": f"工具 '{orig_name}' 执行异常: {outcome}"}
+                        tool_calls_log.append({
+                            "iteration": iteration + 1,
+                            "tool": orig_name,
+                            "args": orig_args,
+                            "result": err_result,
+                        })
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": orig_id,
+                            "content": json.dumps(err_result, ensure_ascii=False),
+                        })
+                        yield AgentEvent(type="tool_result", data={
+                            "tool": orig_name,
+                            "result": err_result,
+                        })
                         continue
                     tc_id, fn_name, fn_args, tool_result = outcome
 
