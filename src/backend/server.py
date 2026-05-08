@@ -607,6 +607,14 @@ async def datafirst_session_history(session_id: str):
     return result
 
 
+@app.delete("/api/datafirst/sessions/{session_id}")
+async def datafirst_delete_session(session_id: str):
+    """删除指定 Session。"""
+    store = get_session_store()
+    await store.delete(session_id)
+    return {"success": True}
+
+
 @app.get("/api/workflows")
 async def list_workflows():
     """List available workflow YAML files."""

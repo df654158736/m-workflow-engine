@@ -323,13 +323,23 @@ body {
 .df-session-item {
   padding: 8px 10px; margin: 2px 0; border-radius: 6px; cursor: pointer;
   font-size: 12px; color: #94a3b8; border: 1px solid transparent;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  position: relative;
+}
+.df-session-item .df-session-summary {
+  display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .df-session-item:hover { background: #1e293b; color: #e2e8f0; }
 .df-session-item.active { background: #1e293b; border-color: #3b82f6; color: #e2e8f0; }
 .df-session-item .df-session-time {
   font-size: 10px; color: #4b5563; display: block; margin-top: 2px;
 }
+.df-session-item .df-session-del {
+  position: absolute; top: 6px; right: 6px; width: 18px; height: 18px;
+  line-height: 18px; text-align: center; border-radius: 4px; font-size: 14px;
+  color: #4b5563; display: none;
+}
+.df-session-item:hover .df-session-del { display: block; }
+.df-session-item .df-session-del:hover { background: #374151; color: #ef4444; }
 .chat-container {
   display: flex; flex-direction: column; height: calc(100vh - 160px); flex: 1;
   background: #111827; border: 1px solid #1f2937; border-radius: 0 10px 10px 0; overflow: hidden;
@@ -1172,7 +1182,9 @@ async function dfLoadSessionList() {
       const t = new Date(s.created_at * 1000);
       const timeStr = t.toLocaleString('zh-CN', { month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit' });
       return `<div class="df-session-item${active}" data-sid="${s.session_id}" onclick="dfSwitchSession('${s.session_id}')">
-        ${s.summary}<span class="df-session-time">${timeStr}</span></div>`;
+        <span class="df-session-summary">${s.summary}</span>
+        <span class="df-session-time">${timeStr}</span>
+        <span class="df-session-del" onclick="event.stopPropagation();dfDeleteSession('${s.session_id}')" title="删除">×</span></div>`;
     }).join('');
   } catch (e) {}
 }
@@ -1202,6 +1214,18 @@ async function dfSwitchSession(sid) {
   } catch (e) {
     _dfSaveSession(null);
   }
+}
+
+async function dfDeleteSession(sid) {
+  try {
+    await fetch(`/api/datafirst/sessions/${sid}`, { method: 'DELETE' });
+    if (_dfSessionId === sid) {
+      _dfSaveSession(null);
+      document.getElementById('df-messages').innerHTML =
+        '<div class="chat-msg system">👋 你好！告诉我你的数据接入需求。</div>';
+    }
+    await dfLoadSessionList();
+  } catch (e) {}
 }
 
 async function sendDatafirst() {

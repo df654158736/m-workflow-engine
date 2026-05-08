@@ -29,7 +29,7 @@ import structlog
 logger = structlog.get_logger()
 
 _TOOL_RESULT_MAX_CHARS = 2000
-_SESSION_TTL_SECONDS = 30 * 60
+_SESSION_TTL_SECONDS = 0  # 0 = 永不过期，用户手动删除
 _MAX_MESSAGES = 120
 _COMPACT_TRIGGER = 80
 
@@ -60,6 +60,8 @@ class Session:
 
     @property
     def expired(self) -> bool:
+        if _SESSION_TTL_SECONDS <= 0:
+            return False
         return time.time() - self.last_active > _SESSION_TTL_SECONDS
 
     @property
@@ -236,7 +238,7 @@ class SessionStore:
             return None
 
         last_active = row[3]
-        if time.time() - last_active > _SESSION_TTL_SECONDS:
+        if _SESSION_TTL_SECONDS > 0 and time.time() - last_active > _SESSION_TTL_SECONDS:
             await self.delete(session_id)
             return None
 
@@ -258,14 +260,16 @@ class SessionStore:
         }
 
     async def list_sessions(self) -> list[dict[str, Any]]:
-        """列出所有未过期 session（含首条用户消息摘要）。"""
-        cutoff = time.time() - _SESSION_TTL_SECONDS
+        """列出所有 session（含首条用户消息摘要）。"""
         db = await self._get_db()
-        async with db.execute(
-            "SELECT session_id, messages, created_at, last_active "
-            "FROM sessions WHERE last_active >= ? ORDER BY last_active DESC",
-            (cutoff,),
-        ) as cursor:
+        if _SESSION_TTL_SECONDS > 0:
+            cutoff = time.time() - _SESSION_TTL_SECONDS
+            query = "SELECT session_id, messages, created_at, last_active FROM sessions WHERE last_active >= ? ORDER BY last_active DESC"
+            params = (cutoff,)
+        else:
+            query = "SELECT session_id, messages, created_at, last_active FROM sessions ORDER BY last_active DESC"
+            params = ()
+        async with db.execute(query, params) as cursor:
             rows = await cursor.fetchall()
 
         result = []
@@ -290,6 +294,8 @@ class SessionStore:
         await db.commit()
 
     async def _cleanup_expired(self) -> None:
+        if _SESSION_TTL_SECONDS <= 0:
+            return
         cutoff = time.time() - _SESSION_TTL_SECONDS
         db = await self._get_db()
         cursor = await db.execute(
