@@ -25,12 +25,8 @@ class CreateObjectTypeArgs(BaseModel):
 
 class UpdateObjectTypePropertiesArgs(BaseModel):
     type_name: str = Field(..., min_length=1)
-    property_name: str = Field(..., min_length=1)
-    display_name: str = Field(..., min_length=1)
-    property_type: str = Field(default="String", pattern=r"^(String|Integer|Double|Boolean|Date|Timestamp|Json)$")
-    required: bool = False
-    is_primary_key: bool = False
-    source_column: str = ""
+    properties: list[dict] = Field(..., min_length=1, description="属性列表")
+    decisions: dict[str, str] = Field(default_factory=dict, description="用户决策 { propertyName: ADD|SKIP }")
 
 
 class FinalizeAndPublishArgs(BaseModel):
@@ -40,6 +36,17 @@ class FinalizeAndPublishArgs(BaseModel):
 class DeleteObjectTypeArgs(BaseModel):
     type_name: str = Field(..., min_length=1)
     cascade: bool = True
+
+
+class SubmitCompareDecisionsArgs(BaseModel):
+    task_id: str = Field(..., min_length=1)
+    decisions: dict[str, str] = Field(..., description="{ compareResultId: CONFIRM|CREATE|REJECT }")
+
+
+class ConfirmFieldMappingsArgs(BaseModel):
+    task_id: str = Field(..., min_length=1)
+    compare_result_id: str = Field(..., min_length=1)
+    decisions: dict[str, str] = Field(..., description="{ mappingId: CONFIRM|SKIP }")
 
 
 @tool(
@@ -328,10 +335,9 @@ async def get_object_type_detail(type_name: str) -> dict:
 @tool(
     name="update_object_type_properties",
     description=(
-        "向已有 ObjectType 添加缺失的属性。用于补全半成品（如 EDITING/DRAFT 状态下属性不全的 ObjectType）。"
-        "每次调用添加一个属性。如需添加多个，请多次调用。"
+        "向已有 ObjectType 批量添加属性（⚠️ 交互式卡片）。"
+        "传入所有待添加的属性列表，系统会弹出交互卡片让用户逐个勾选添加或跳过，提交后批量执行。"
     ),
-    requires_confirmation=True,
     args_model=UpdateObjectTypePropertiesArgs,
     parameters={
         "type": "object",
@@ -340,71 +346,133 @@ async def get_object_type_detail(type_name: str) -> dict:
                 "type": "string",
                 "description": "ObjectType 名称",
             },
-            "property_name": {
-                "type": "string",
-                "description": "属性名（snake_case 英文，如 sku_code）",
+            "properties": {
+                "type": "array",
+                "description": "要添加/更新的属性列表",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "property_name": {"type": "string", "description": "属性名（camelCase，如 paymentMethod）"},
+                        "display_name": {"type": "string", "description": "中文显示名"},
+                        "type": {"type": "string", "description": "String/Integer/Long/Double/Boolean/Date/Timestamp/Json"},
+                        "required": {"type": "boolean", "description": "是否必填（默认 false）"},
+                        "is_primary_key": {"type": "boolean", "description": "是否主键（默认 false）"},
+                        "source_column": {"type": "string", "description": "源表列名（数据映射用）"},
+                    },
+                    "required": ["property_name", "display_name", "type"],
+                },
             },
-            "display_name": {
-                "type": "string",
-                "description": "中文显示名（如 SKU编码）",
-            },
-            "property_type": {
-                "type": "string",
-                "description": "属性类型：String/Integer/Double/Boolean/Date/Timestamp/Json",
-            },
-            "required": {
-                "type": "boolean",
-                "description": "是否必填（默认 false）",
-            },
-            "is_primary_key": {
-                "type": "boolean",
-                "description": "是否主键（默认 false）",
-            },
-            "source_column": {
-                "type": "string",
-                "description": "源表列名（数据映射用）",
+            "decisions": {
+                "type": "object",
+                "description": "用户决策（不要填，系统自动回传）: { propertyName: ADD|SKIP }",
             },
         },
-        "required": ["type_name", "property_name", "display_name", "property_type"],
+        "required": ["type_name", "properties"],
     },
 )
 async def update_object_type_properties(
     type_name: str,
-    property_name: str,
-    display_name: str,
-    property_type: str = "String",
-    required: bool = False,
-    is_primary_key: bool = False,
-    source_column: str = "",
+    properties: list,
+    decisions: dict | None = None,
+    _confirmed: bool = False,
 ) -> dict:
+    import logging
+    _log = logging.getLogger(__name__)
+
     project_id = get_project_id()
     if not project_id:
         return {"error": "未配置 project_id"}
 
-    body: dict = {
-        "property_name": property_name,
-        "display_name": display_name,
-        "type": property_type,
-        "required": required,
-        "is_primary_key": is_primary_key,
-    }
-    if source_column:
-        body["source_type"] = "DATABASE"
-        body["source_column"] = source_column
+    if not _confirmed:
+        rows = []
+        for prop in properties:
+            pname = prop.get("property_name", "")
+            if not pname:
+                continue
+            rows.append({
+                "id": pname,
+                "property_name": pname,
+                "display_name": prop.get("display_name", ""),
+                "type": prop.get("type", "String"),
+                "source_column": prop.get("source_column", "") or "—",
+                "required": "✓" if prop.get("required") else "",
+                "suggestion": "ADD",
+            })
 
-    try:
-        data = await api_post(
-            f"/api/v1/projects/{project_id}/ontology/object-types/{type_name}/properties",
-            json_data=body,
-        )
-    except ApiError as e:
-        return {"error": str(e)}
+        if not rows:
+            return {"error": "属性列表为空"}
 
+        card_data = {
+            "card_type": "review_table",
+            "title": f"属性补全 — {type_name}",
+            "description": f"共 {len(rows)} 个属性待添加，请逐个确认或跳过",
+            "columns": [
+                {"key": "property_name", "label": "属性名"},
+                {"key": "display_name", "label": "中文名"},
+                {"key": "type", "label": "类型", "type": "badge"},
+                {"key": "source_column", "label": "源列"},
+                {"key": "required", "label": "必填"},
+                {"key": "suggestion", "label": "建议", "type": "badge"},
+            ],
+            "rows": rows,
+            "actions": [
+                {"value": "ADD", "label": "✅ 添加", "color": "green"},
+                {"value": "SKIP", "label": "⏭️ 跳过", "color": "gray"},
+            ],
+            "submit_label": "提交属性变更",
+            "result_key": "decisions",
+        }
+
+        return {
+            "requires_confirmation": True,
+            "confirmation_type": "interactive_card",
+            "card_data": card_data,
+            "tool": "update_object_type_properties",
+            "args": {"type_name": type_name, "properties": properties, "decisions": {}},
+            "message": f"共 {len(rows)} 个属性待添加，请在卡片中确认。",
+        }
+
+    decisions = decisions or {}
+    props_to_add = [p for p in properties if decisions.get(p.get("property_name", ""), "ADD") == "ADD"]
+
+    _log.info("[update_object_type_properties] adding %d/%d properties to %s",
+              len(props_to_add), len(properties), type_name)
+
+    results = []
+    errors = []
+    for prop in props_to_add:
+        body: dict = {
+            "property_name": prop.get("property_name", ""),
+            "display_name": prop.get("display_name", ""),
+            "type": prop.get("type", "String"),
+            "required": prop.get("required", False),
+            "is_primary_key": prop.get("is_primary_key", False),
+        }
+        source_col = prop.get("source_column", "")
+        if source_col:
+            body["source_type"] = "DATABASE"
+            body["source_column"] = source_col
+
+        try:
+            await api_post(
+                f"/api/v1/projects/{project_id}/ontology/object-types/{type_name}/properties",
+                json_data=body,
+            )
+            results.append({"property": prop.get("property_name"), "status": "ok"})
+        except ApiError as e:
+            errors.append({"property": prop.get("property_name"), "error": str(e)})
+
+    skipped = len(properties) - len(props_to_add)
     return {
-        "success": True,
+        "success": len(errors) == 0,
         "type_name": type_name,
-        "added_property": property_name,
-        "status": data.get("status", ""),
+        "added": len(results),
+        "skipped": skipped,
+        "failed": len(errors),
+        "errors": errors,
+        "message": f"已添加 {len(results)} 个属性" +
+                   (f"，跳过 {skipped} 个" if skipped else "") +
+                   (f"，{len(errors)} 个失败" if errors else ""),
     }
 
 
@@ -511,4 +579,314 @@ async def delete_object_type(type_name: str, cascade: bool = True) -> dict:
         "type_name": type_name,
         "cascade": cascade,
         "message": f"ObjectType '{type_name}' 及其所有关联资源已删除",
+    }
+
+
+@tool(
+    name="submit_compare_decisions",
+    description=(
+        "对 AI 探查到的候选对象批量提交确认/驳回/新建决策。"
+        "调用前必须先用 trigger_ai_analysis 获取候选列表。"
+        "此工具会自动弹出交互式卡片让用户逐个点击确认/驳回/新建，用户提交后才真正执行写入。"
+        "decisions 中的 key 是 trigger_ai_analysis 返回的候选对象 id，value 是你的建议决策。"
+    ),
+    args_model=SubmitCompareDecisionsArgs,
+    parameters={
+        "type": "object",
+        "properties": {
+            "task_id": {
+                "type": "string",
+                "description": "数据编织任务 ID（从 create_fabric_task 或 trigger_ai_analysis 获取）",
+            },
+            "decisions": {
+                "type": "object",
+                "description": (
+                    "每个候选对象的建议决策，格式: { compareResultId: 'CONFIRM'|'CREATE'|'REJECT' }。"
+                    "key 是 trigger_ai_analysis 返回的候选 id，value 是建议决策。"
+                    "MAPPED/MATCHABLE 状态建议 CONFIRM，NEW 状态建议 CREATE。"
+                ),
+            },
+        },
+        "required": ["task_id", "decisions"],
+    },
+)
+async def submit_compare_decisions(
+    task_id: str,
+    decisions: dict[str, str],
+    _confirmed: bool = False,
+) -> dict:
+    import logging
+    _log = logging.getLogger(__name__)
+
+    project_id = get_project_id()
+    if not project_id:
+        return {"error": "未配置 project_id"}
+
+    _log.info("[submit_compare_decisions] task_id=%s, decisions=%s, _confirmed=%s", task_id, decisions, _confirmed)
+
+    if not _confirmed:
+        card_data = await _build_card_data_from_api(project_id, task_id, decisions)
+        if card_data and card_data.get("rows"):
+            _log.info("[submit_compare_decisions] built card_data with %d rows, returning for confirmation", len(card_data["rows"]))
+            return {
+                "requires_confirmation": True,
+                "confirmation_type": "interactive_card",
+                "card_data": card_data,
+                "tool": "submit_compare_decisions",
+                "args": {"task_id": task_id, "decisions": decisions},
+                "message": f"AI 探查到 {len(card_data['rows'])} 个候选对象，请在卡片中确认决策。",
+            }
+
+    _log.info("[submit_compare_decisions] executing decisions for %d candidates", len(decisions))
+    results = []
+    errors = []
+    for result_id, decision in decisions.items():
+        try:
+            await api_put(
+                f"/api/v1/projects/{project_id}/data-fabric/tasks/{task_id}"
+                f"/compare-results/{result_id}/decision",
+                {"decision": decision},
+            )
+            results.append({"id": result_id, "decision": decision, "status": "ok"})
+        except ApiError as e:
+            errors.append({"id": result_id, "decision": decision, "error": str(e)})
+
+    confirmed_ids = [r["id"] for r in results if r["decision"] in ("CONFIRM", "CREATE")]
+    return {
+        "success": len(errors) == 0,
+        "submitted": len(results),
+        "errors": errors,
+        "confirmed_object_ids": confirmed_ids,
+        "message": f"已提交 {len(results)} 个决策" + (f"，{len(errors)} 个失败" if errors else ""),
+    }
+
+
+async def _build_card_data_from_api(project_id: str, task_id: str, decisions: dict[str, str]) -> dict:
+    """从 web-app API 查询 compare-results，自动构造交互卡片数据。"""
+    try:
+        results = await api_get(
+            f"/api/v1/projects/{project_id}/data-fabric/tasks/{task_id}/compare-results"
+        )
+    except ApiError:
+        return {}
+
+    candidates = results if isinstance(results, list) else results.get("items", results.get("results", []))
+    rows = []
+    for c in candidates:
+        cid = c.get("id", "")
+        if not cid:
+            continue
+        sources = c.get("sourceTables", c.get("source_tables", []))
+        source_str = ", ".join(
+            f"{s.get('datasourceName', '')}/{s.get('tableName', '')}" if isinstance(s, dict) else str(s)
+            for s in (sources if isinstance(sources, list) else [])
+        ) or "—"
+        status = c.get("status", c.get("matchStatus", "NEW"))
+        confidence = c.get("confidence", c.get("matchConfidence", 0))
+        if not isinstance(confidence, (int, float)):
+            confidence = 0
+        matched = c.get("matchedOntologyName", c.get("matched_ontology_name", "")) or "—"
+        name_cn = c.get("candidateName", c.get("candidate_name", ""))
+        name_en = c.get("candidateNameEn", c.get("candidate_name_en", ""))
+        display_name = f"{name_cn} ({name_en})" if name_en else name_cn
+
+        suggestion = decisions.get(cid, "CONFIRM" if status in ("MAPPED", "MATCHABLE") else "CREATE")
+        rows.append({
+            "id": cid,
+            "name": display_name,
+            "status": status,
+            "confidence": int(confidence) if confidence else 0,
+            "matched": matched,
+            "sources": source_str,
+            "suggestion": suggestion,
+        })
+
+    return {
+        "card_type": "review_table",
+        "title": f"AI 探查到 {len(rows)} 个候选对象",
+        "description": "请对每个候选对象做出决策后提交",
+        "columns": [
+            {"key": "name", "label": "名称"},
+            {"key": "status", "label": "匹配状态", "type": "badge"},
+            {"key": "confidence", "label": "置信度", "type": "percent"},
+            {"key": "matched", "label": "匹配本体"},
+            {"key": "sources", "label": "来源表"},
+            {"key": "suggestion", "label": "AI 建议", "type": "badge"},
+        ],
+        "rows": rows,
+        "actions": [
+            {"value": "CONFIRM", "label": "✅ 确认", "color": "green"},
+            {"value": "CREATE", "label": "➕ 新建", "color": "blue"},
+            {"value": "REJECT", "label": "❌ 驳回", "color": "red"},
+        ],
+        "submit_label": "提交全部决策",
+        "result_key": "decisions",
+    }
+
+
+@tool(
+    name="confirm_field_mappings",
+    description=(
+        "对某个候选对象的字段映射进行交互式确认。"
+        "调用前必须先用 get_field_mappings 获取映射列表。"
+        "此工具会自动弹出交互式卡片让用户逐个确认/跳过每个字段映射，用户提交后才真正执行写入。"
+        "decisions 中的 key 是字段映射 id，value 是 CONFIRM 或 SKIP。"
+    ),
+    args_model=ConfirmFieldMappingsArgs,
+    parameters={
+        "type": "object",
+        "properties": {
+            "task_id": {
+                "type": "string",
+                "description": "数据编织任务 ID",
+            },
+            "compare_result_id": {
+                "type": "string",
+                "description": "候选对象 ID（从 trigger_ai_analysis 获取）",
+            },
+            "decisions": {
+                "type": "object",
+                "description": (
+                    "每个字段映射的建议决策: { mappingId: 'CONFIRM'|'SKIP' }。"
+                    "key 是 get_field_mappings 返回的映射 id，value 是建议决策。"
+                    "AI_SUGGESTED 状态建议 CONFIRM，不需要的字段建议 SKIP。"
+                ),
+            },
+        },
+        "required": ["task_id", "compare_result_id", "decisions"],
+    },
+)
+async def confirm_field_mappings(
+    task_id: str,
+    compare_result_id: str,
+    decisions: dict[str, str],
+    _confirmed: bool = False,
+) -> dict:
+    import logging
+    _log = logging.getLogger(__name__)
+
+    project_id = get_project_id()
+    if not project_id:
+        return {"error": "未配置 project_id"}
+
+    _log.info("[confirm_field_mappings] task_id=%s, compare_result_id=%s, _confirmed=%s",
+              task_id, compare_result_id, _confirmed)
+
+    if not _confirmed:
+        card_data = await _build_field_mapping_card(project_id, task_id, compare_result_id, decisions)
+        if card_data and card_data.get("rows"):
+            _log.info("[confirm_field_mappings] built card_data with %d rows", len(card_data["rows"]))
+            return {
+                "requires_confirmation": True,
+                "confirmation_type": "interactive_card",
+                "card_data": card_data,
+                "tool": "confirm_field_mappings",
+                "args": {
+                    "task_id": task_id,
+                    "compare_result_id": compare_result_id,
+                    "decisions": decisions,
+                },
+                "message": f"共 {len(card_data['rows'])} 个字段映射，请在卡片中确认。",
+            }
+        _log.warning("[confirm_field_mappings] card_data empty, mappings not ready yet")
+        return {
+            "error": "字段映射尚未生成完成，请先调用 get_field_mappings 确认映射列表不为空后再试。",
+            "hint": "可能需要等待几秒让映射生成完成。",
+        }
+
+    _log.info("[confirm_field_mappings] executing decisions for %d mappings", len(decisions))
+    results = []
+    errors = []
+    base = f"/api/v1/projects/{project_id}/data-fabric/tasks/{task_id}/mappings/{compare_result_id}"
+    for mapping_id, decision in decisions.items():
+        status = "USER_CONFIRMED" if decision == "CONFIRM" else "REJECTED"
+        try:
+            await api_put(
+                f"{base}/{mapping_id}",
+                {"status": status},
+            )
+            results.append({"id": mapping_id, "decision": decision, "status": "ok"})
+        except ApiError as e:
+            errors.append({"id": mapping_id, "decision": decision, "error": str(e)})
+
+    return {
+        "success": len(errors) == 0,
+        "confirmed": sum(1 for r in results if r["decision"] == "CONFIRM"),
+        "skipped": sum(1 for r in results if r["decision"] == "SKIP"),
+        "errors": errors,
+        "message": f"已处理 {len(results)} 个字段映射" + (f"，{len(errors)} 个失败" if errors else ""),
+    }
+
+
+async def _build_field_mapping_card(
+    project_id: str, task_id: str, compare_result_id: str, decisions: dict[str, str],
+) -> dict:
+    """从 web-app API 查询字段映射，构造交互卡片数据。若映射尚未生成则先触发生成。"""
+    base = f"/api/v1/projects/{project_id}/data-fabric/tasks/{task_id}/mappings/{compare_result_id}"
+    try:
+        data = await api_get(base)
+    except ApiError:
+        data = []
+    mappings_list = data if isinstance(data, list) else data.get("mappings", data.get("items", []))
+    if not mappings_list:
+        try:
+            await api_post(f"{base}/generate")
+            data = await api_get(base)
+        except ApiError:
+            return {}
+
+    mappings = data if isinstance(data, list) else data.get("mappings", data.get("items", []))
+    rows = []
+    for m in mappings:
+        mid = m.get("id", "")
+        if not mid:
+            continue
+        source_col = m.get("sourceColumn", m.get("source_column", ""))
+        target_prop = m.get("targetAttribute", m.get("targetPropertyName", m.get("target_property_name", "")))
+        data_type = m.get("targetType", m.get("targetDataType", m.get("target_data_type", "")))
+        status = m.get("status", "AI_SUGGESTED")
+        suggestion = decisions.get(mid, "CONFIRM" if status in ("AI_SUGGESTED", "CONFIRMED") else "SKIP")
+        rows.append({
+            "id": mid,
+            "source_column": source_col,
+            "target_property": target_prop,
+            "data_type": data_type,
+            "status": status,
+            "suggestion": suggestion,
+        })
+
+    # 尝试获取候选对象名称
+    obj_name = ""
+    try:
+        results = await api_get(
+            f"/api/v1/projects/{project_id}/data-fabric/tasks/{task_id}/compare-results"
+        )
+        candidates = results if isinstance(results, list) else results.get("items", [])
+        for c in candidates:
+            if c.get("id") == compare_result_id:
+                obj_name = c.get("candidateName", c.get("candidate_name", ""))
+                break
+    except ApiError:
+        pass
+
+    title = f"字段映射确认" + (f" — {obj_name}" if obj_name else "")
+
+    return {
+        "card_type": "review_table",
+        "title": title,
+        "description": f"共 {len(rows)} 个字段映射，请逐个确认或跳过",
+        "columns": [
+            {"key": "source_column", "label": "源列名"},
+            {"key": "target_property", "label": "目标属性"},
+            {"key": "data_type", "label": "数据类型", "type": "badge"},
+            {"key": "status", "label": "状态", "type": "badge"},
+            {"key": "suggestion", "label": "AI 建议", "type": "badge"},
+        ],
+        "rows": rows,
+        "actions": [
+            {"value": "CONFIRM", "label": "✅ 确认", "color": "green"},
+            {"value": "SKIP", "label": "⏭️ 跳过", "color": "gray"},
+        ],
+        "submit_label": "提交字段映射",
+        "result_key": "decisions",
     }

@@ -180,7 +180,7 @@ workflow-engine-demo/
 ├── workflows/                  # YAML 工作流定义
 └── src/
     ├── frontend/
-    │   └── index.html          # Web UI（DAG 可视化 + 执行追踪）
+    │   └── index.html          # Web UI（DAG 可视化 + 执行追踪 + Chat）
     └── backend/
         ├── server.py           # FastAPI 服务
         ├── dsl_parser.py       # DSL 解析 + 拓扑排序
@@ -191,13 +191,27 @@ workflow-engine-demo/
         │   ├── workflow.py     # Temporal Workflow（DAG 编排）
         │   ├── activities.py   # Activity（节点执行分发）
         │   └── worker.py       # Worker 管理
-        └── executors/
-            ├── llm.py          # LLM（Qwen-Plus）
-            ├── tool.py         # 工具调用
-            ├── flink_sql.py    # 数据查询
-            ├── function.py     # 自定义函数
-            ├── condition.py    # 条件分支
-            └── approval.py     # 人工审批
+        ├── executors/
+        │   ├── llm.py          # LLM（Qwen-Plus）
+        │   ├── tool.py         # 工具调用
+        │   ├── flink_sql.py    # 数据查询
+        │   ├── function.py     # 自定义函数
+        │   ├── condition.py    # 条件分支
+        │   └── approval.py     # 人工审批
+        └── agent/              # Planning Agent（三层技能架构）
+            ├── planner.py      # ReAct Loop + Session 多轮对话
+            ├── session.py      # SQLite 会话持久化
+            ├── tool_registry.py# 工具注册 + Pydantic 校验
+            ├── skill_loader.py # 三层技能加载器
+            ├── memory_store.py # 经验记忆
+            ├── api_client.py   # zhice-paas REST 客户端
+            ├── tools/          # Agent 可调用的工具（29 个）
+            └── skills/         # 三层领域知识体系
+                ├── _core/      # Layer 1: 核心规则（始终注入）
+                ├── {skill}/    # Layer 3: SKILL.md + references/
+                │   ├── SKILL.md
+                │   └── references/*.md
+                └── domain/     # 领域工作流
 ```
 
 ---
@@ -209,3 +223,6 @@ workflow-engine-demo/
 - **Signal 机制** — Approval 节点通过 Temporal Signal 实现人机交互，工作流暂停/恢复
 - **DAG 拓扑排序** — 自动解析依赖关系，确定执行顺序
 - **LLM Agent 规划** — 自然语言 → 结构化 YAML，实现"需求即工作流"
+- **三层技能架构** — 仿照 Claude Code 设计，Core Rules 始终注入 + Catalog 索引 + Agent 按需查询 Detail，减少 85-91% prompt 体积
+- **ReAct Loop** — 推理-行动循环（最多 15 轮），Agent 主动校验 + 自修正 + 工具调用
+- **Session 持久化** — SQLite WAL 模式多轮对话，支持上下文压缩和手动删除

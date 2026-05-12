@@ -9,12 +9,15 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable, Awaitable
 
 from pydantic import BaseModel, ValidationError
 
-_TOOL_TIMEOUT_SECONDS = 60
+logger = logging.getLogger(__name__)
+
+_TOOL_TIMEOUT_SECONDS = 300
 
 
 @dataclass
@@ -23,7 +26,7 @@ class ToolDefinition:
     description: str
     parameters: dict[str, Any]
     handler: Callable[..., Awaitable[dict]]
-    requires_confirmation: bool = False
+    requires_confirmation: bool | str = False
     args_model: type[BaseModel] | None = None
 
 
@@ -79,15 +82,26 @@ class ToolRegistry:
                     "hint": f"请检查 '{name}' 的参数格式后重新调用。",
                 }
         if defn.requires_confirmation and not confirmed:
-            return {
+            result = {
                 "requires_confirmation": True,
                 "tool": name,
                 "args": arguments,
                 "message": f"工具 '{name}' 是写操作，需要用户确认后才能执行。",
             }
+            if isinstance(defn.requires_confirmation, str):
+                result["confirmation_type"] = defn.requires_confirmation
+                if "card_data" in arguments:
+                    result["card_data"] = arguments.pop("card_data")
+                logger.info("[ToolRegistry] interactive confirmation: tool=%s, type=%s, has_card_data=%s",
+                            name, defn.requires_confirmation, "card_data" in result)
+            return result
         try:
+            call_args = dict(arguments)
+            sig = inspect.signature(defn.handler)
+            if "_confirmed" in sig.parameters and confirmed:
+                call_args["_confirmed"] = True
             result = await asyncio.wait_for(
-                defn.handler(**arguments),
+                defn.handler(**call_args),
                 timeout=_TOOL_TIMEOUT_SECONDS,
             )
             return result
@@ -105,7 +119,7 @@ def tool(
     name: str,
     description: str,
     parameters: dict[str, Any] | None = None,
-    requires_confirmation: bool = False,
+    requires_confirmation: bool | str = False,
     args_model: type[BaseModel] | None = None,
 ):
     """装饰器：注册一个 Agent Tool。

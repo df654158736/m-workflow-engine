@@ -424,6 +424,86 @@ body {
 .chat-typing span:nth-child(2) { animation-delay: 0.2s; }
 .chat-typing span:nth-child(3) { animation-delay: 0.4s; }
 @keyframes typing { 0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; } 40% { transform: scale(1); opacity: 1; } }
+
+/* --- 通用交互卡片 --- */
+.df-interactive-card {
+  background: #1e293b; border: 1px solid #334155; border-radius: 10px;
+  padding: 16px; margin: 8px 0; max-width: 720px;
+}
+.df-ic-title { color: #f0f4f8; font-size: 15px; font-weight: 600; margin-bottom: 4px; }
+.df-ic-desc { color: #94a3b8; font-size: 12px; margin-bottom: 12px; }
+.df-ic-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.df-ic-table th {
+  background: #0f172a; color: #93c5fd; padding: 7px 10px; text-align: left;
+  border-bottom: 1px solid #334155; font-weight: 500;
+}
+.df-ic-table td {
+  padding: 8px 10px; border-bottom: 1px solid #1e293b; color: #d1d5db; vertical-align: middle;
+}
+.df-ic-table tr:hover td { background: #0f172a; }
+.df-ic-table tr.decided td { opacity: 0.85; }
+
+.df-ic-badge {
+  display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 500;
+}
+.df-ic-badge-MAPPED, .df-ic-badge-CONFIRM, .df-ic-badge-green { background: #064e3b; color: #6ee7b7; }
+.df-ic-badge-MATCHABLE, .df-ic-badge-yellow { background: #713f12; color: #fcd34d; }
+.df-ic-badge-NEW, .df-ic-badge-CREATE, .df-ic-badge-blue { background: #1e3a5f; color: #93c5fd; }
+.df-ic-badge-REJECT, .df-ic-badge-red { background: #7f1d1d; color: #fca5a5; }
+
+.df-ic-percent-bar {
+  display: inline-block; width: 48px; height: 6px; background: #374151; border-radius: 3px; vertical-align: middle; margin-right: 4px;
+}
+.df-ic-percent-fill { height: 100%; border-radius: 3px; background: #3b82f6; }
+
+.df-ic-actions { display: flex; gap: 4px; }
+.df-ic-actions button {
+  padding: 3px 10px; border-radius: 4px; font-size: 11px; cursor: pointer;
+  border: 1px solid #475569; background: transparent; color: #94a3b8; transition: all 0.15s;
+}
+.df-ic-actions button:hover { border-color: #60a5fa; color: #e2e8f0; }
+.df-ic-actions button.active-green  { background: #064e3b; color: #6ee7b7; border-color: #059669; }
+.df-ic-actions button.active-blue   { background: #1e3a5f; color: #93c5fd; border-color: #3b82f6; }
+.df-ic-actions button.active-red    { background: #7f1d1d; color: #fca5a5; border-color: #dc2626; }
+
+.df-ic-footer {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-top: 12px; padding-top: 10px; border-top: 1px solid #334155;
+}
+.df-ic-counter { color: #94a3b8; font-size: 12px; }
+.df-ic-counter strong { color: #f0f4f8; }
+.df-ic-submit {
+  padding: 8px 20px; border-radius: 6px; font-size: 13px; font-weight: 600;
+  border: none; cursor: pointer; color: white;
+  background: linear-gradient(135deg, #059669, #047857); transition: opacity 0.15s;
+}
+.df-ic-submit:hover { background: linear-gradient(135deg, #10b981, #059669); }
+.df-ic-submit:disabled { opacity: 0.35; cursor: not-allowed; }
+.df-ic-submitted { opacity: 0.5; pointer-events: none; }
+
+.df-choice-card {
+  background: #1e293b; border: 1px solid #334155; border-radius: 10px;
+  padding: 16px; margin: 8px 0; max-width: 480px;
+}
+.df-choice-title { color: #f0f4f8; font-size: 14px; font-weight: 600; margin-bottom: 4px; }
+.df-choice-desc { color: #94a3b8; font-size: 12px; margin-bottom: 12px; }
+.df-choice-options { display: flex; flex-wrap: wrap; gap: 8px; }
+.df-choice-btn {
+  padding: 8px 18px; border-radius: 6px; border: 1px solid #475569;
+  background: #0f172a; color: #e2e8f0; cursor: pointer; font-size: 13px;
+  transition: all .15s;
+}
+.df-choice-btn:hover { border-color: #60a5fa; color: #fff; background: #1e3a5f; }
+.df-choice-btn.df-choice-green:hover { border-color: #059669; background: #064e3b; color: #6ee7b7; }
+.df-choice-btn.df-choice-blue:hover  { border-color: #3b82f6; background: #1e3a5f; color: #93c5fd; }
+.df-choice-btn.df-choice-red:hover   { border-color: #dc2626; background: #7f1d1d; color: #fca5a5; }
+.df-choice-btn.df-choice-gray:hover  { border-color: #9ca3af; background: #374151; color: #e5e7eb; }
+.df-choice-btn.selected { font-weight: 600; }
+.df-choice-btn.selected.df-choice-green { border-color: #059669; background: #064e3b; color: #6ee7b7; }
+.df-choice-btn.selected.df-choice-blue  { border-color: #3b82f6; background: #1e3a5f; color: #93c5fd; }
+.df-choice-btn.selected.df-choice-red   { border-color: #dc2626; background: #7f1d1d; color: #fca5a5; }
+.df-choice-btn.selected.df-choice-gray  { border-color: #9ca3af; background: #374151; color: #e5e7eb; }
+.df-choice-submitted { opacity: 0.5; pointer-events: none; }
 </style>
 </head>
 <body>
@@ -1333,6 +1413,10 @@ async function _dfConsumeStream(resp) {
             dfShowConfirmation({ tool: evtData.tool, args: evtData.args, tool_call_id: evtData.tool_call_id });
             document.getElementById('df-status').textContent = '等待确认...';
             break;
+          case 'interactive_card':
+            dfRenderInteractiveCard(evtData);
+            document.getElementById('df-status').textContent = '等待决策...';
+            break;
           case 'done':
             if (evtData.session_id) _dfSaveSession(evtData.session_id);
             document.getElementById('df-status').textContent = '就绪';
@@ -1363,8 +1447,13 @@ async function _dfSendLegacy(body) {
 
   if (data.requires_confirmation && data.pending_tool) {
     dfAddMsg('agent', data.response || `操作 "${data.pending_tool.tool}" 需要您确认。`, data.tool_calls);
-    dfShowConfirmation(data.pending_tool);
-    document.getElementById('df-status').textContent = '等待确认...';
+    if (data.pending_tool.confirmation_type === 'interactive_card' && data.pending_tool.card_data) {
+      dfRenderInteractiveCard(data.pending_tool);
+      document.getElementById('df-status').textContent = '等待决策...';
+    } else {
+      dfShowConfirmation(data.pending_tool);
+      document.getElementById('df-status').textContent = '等待确认...';
+    }
   } else if (data.success && data.response) {
     dfAddMsg('agent', data.response, data.tool_calls);
     document.getElementById('df-status').textContent = `就绪 — ${data.iterations} 轮推理，${(data.tool_calls||[]).length} 次工具调用`;
@@ -1455,6 +1544,232 @@ async function dfRejectTool() {
     }
   } catch (e) {
     // 拒绝失败不影响用户体验
+  }
+}
+
+// --- 通用交互卡片 ---
+let _interactiveCardState = null;
+let _interactiveCardSeq = 0;
+
+function dfRenderInteractiveCard(evtData) {
+  const cardData = evtData.card_data || evtData;
+  const toolCallId = evtData.tool_call_id;
+  const toolName = evtData.tool;
+  const toolArgs = evtData.args || {};
+
+  if (cardData.card_type === 'review_table') {
+    _dfRenderReviewTable(cardData, toolCallId, toolName, toolArgs);
+  } else if (cardData.card_type === 'choice') {
+    _dfRenderChoice(cardData, toolCallId, toolName, toolArgs);
+  }
+}
+
+function _dfRenderReviewTable(card, toolCallId, toolName, toolArgs) {
+  const rows = card.rows || [];
+  const columns = card.columns || [];
+  const actions = card.actions || [];
+  const resultKey = card.result_key || 'decisions';
+  const seq = ++_interactiveCardSeq;
+
+  const decisions = {};
+  rows.forEach(r => { decisions[r.id] = r.suggestion || null; });
+  _interactiveCardState = { toolCallId, toolName, toolArgs, resultKey, decisions, total: rows.length, seq };
+
+  const container = document.getElementById('df-messages');
+  const wrapper = document.createElement('div');
+  wrapper.className = 'chat-msg system';
+  wrapper.id = 'df-interactive-card-box-' + seq;
+
+  let tableHtml = '<table class="df-ic-table"><thead><tr>';
+  columns.forEach(col => { tableHtml += `<th>${col.label}</th>`; });
+  tableHtml += '<th>操作</th></tr></thead><tbody>';
+
+  rows.forEach(row => {
+    const hasPreselect = !!row.suggestion;
+    tableHtml += `<tr id="df-ic-row-${seq}-${row.id}" class="${hasPreselect ? 'decided' : ''}">`;
+    columns.forEach(col => {
+      const val = row[col.key] ?? '—';
+      if (col.type === 'badge') {
+        tableHtml += `<td><span class="df-ic-badge df-ic-badge-${val}">${val}</span></td>`;
+      } else if (col.type === 'percent') {
+        const pct = typeof val === 'number' ? val : 0;
+        tableHtml += `<td><span class="df-ic-percent-bar"><span class="df-ic-percent-fill" style="width:${pct}%"></span></span> ${pct}%</td>`;
+      } else {
+        tableHtml += `<td>${val}</td>`;
+      }
+    });
+    const suggestion = row.suggestion || null;
+    tableHtml += `<td><div class="df-ic-actions">`;
+    actions.forEach(act => {
+      const isPreselected = suggestion && act.value === suggestion;
+      const cls = isPreselected ? `active-${act.color}` : '';
+      tableHtml += `<button class="${cls}" data-row="${row.id}" data-value="${act.value}" data-color="${act.color}" onclick="dfSetRowDecision(${seq},'${row.id}','${act.value}','${act.color}')">${act.label}</button>`;
+    });
+    tableHtml += '</div></td></tr>';
+  });
+  tableHtml += '</tbody></table>';
+
+  wrapper.innerHTML = `
+    <div class="df-interactive-card">
+      <div class="df-ic-title">${card.title || '交互决策'}</div>
+      ${card.description ? `<div class="df-ic-desc">${card.description}</div>` : ''}
+      ${tableHtml}
+      <div class="df-ic-footer">
+        <span class="df-ic-counter">已决策: <strong id="df-ic-decided-count-${seq}">${Object.values(decisions).filter(v => v !== null).length}</strong> / <strong>${rows.length}</strong></span>
+        <button class="df-ic-submit" id="df-ic-submit-btn-${seq}" ${Object.values(decisions).filter(v => v !== null).length < rows.length ? 'disabled' : ''} onclick="dfSubmitCardDecisions()">${card.submit_label || '提交'}</button>
+      </div>
+    </div>
+  `;
+  container.appendChild(wrapper);
+  container.scrollTop = container.scrollHeight;
+}
+
+function dfSetRowDecision(seq, rowId, value, color) {
+  if (!_interactiveCardState || _interactiveCardState.seq !== seq) return;
+  _interactiveCardState.decisions[rowId] = value;
+
+  const row = document.getElementById(`df-ic-row-${seq}-${rowId}`);
+  if (row) {
+    row.classList.add('decided');
+    row.querySelectorAll('.df-ic-actions button').forEach(btn => {
+      btn.className = '';
+      if (btn.dataset.value === value) {
+        btn.classList.add(`active-${color}`);
+      }
+    });
+  }
+
+  const decided = Object.values(_interactiveCardState.decisions).filter(v => v !== null).length;
+  const countEl = document.getElementById('df-ic-decided-count-' + seq);
+  if (countEl) countEl.textContent = decided;
+  const submitBtn = document.getElementById('df-ic-submit-btn-' + seq);
+  if (submitBtn) submitBtn.disabled = (decided < _interactiveCardState.total);
+}
+
+async function dfSubmitCardDecisions() {
+  const state = _interactiveCardState;
+  if (!state) return;
+  _interactiveCardState = null;
+
+  const cardBox = document.getElementById('df-interactive-card-box-' + state.seq);
+  if (cardBox) cardBox.querySelector('.df-interactive-card').classList.add('df-ic-submitted');
+
+  const submitBtn = document.getElementById('df-ic-submit-btn-' + state.seq);
+  if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = '已提交'; }
+
+  dfAddMsg('user', '✅ 已提交决策');
+  _dfBusy = true;
+  document.getElementById('df-send-btn').disabled = true;
+  document.getElementById('df-status').textContent = '执行中...';
+
+  const confirmedArgs = { ...state.toolArgs };
+  confirmedArgs[state.resultKey] = state.decisions;
+
+  try {
+    const body = {
+      confirmed_tool: {
+        tool: state.toolName,
+        args: confirmedArgs,
+        tool_call_id: state.toolCallId,
+      },
+      input: '',
+    };
+    if (_dfSessionId) body.session_id = _dfSessionId;
+
+    const resp = await fetch('/api/datafirst/stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+    if (!resp.ok || !resp.body) {
+      return await _dfSendLegacy(body);
+    }
+    await _dfConsumeStream(resp);
+  } catch (e) {
+    dfAddMsg('system', '❌ 提交失败: ' + e.message);
+  } finally {
+    _dfBusy = false;
+    document.getElementById('df-send-btn').disabled = false;
+  }
+}
+
+function _dfRenderChoice(card, toolCallId, toolName, toolArgs) {
+  const options = card.options || [];
+  const resultKey = card.result_key || 'choice';
+  const seq = ++_interactiveCardSeq;
+
+  _interactiveCardState = { toolCallId, toolName, toolArgs, resultKey, decisions: null, total: 1, seq };
+
+  const container = document.getElementById('df-messages');
+  const wrapper = document.createElement('div');
+  wrapper.className = 'chat-msg system';
+  wrapper.id = 'df-choice-box-' + seq;
+
+  let btnsHtml = '';
+  options.forEach(opt => {
+    const color = opt.color || 'blue';
+    btnsHtml += `<button class="df-choice-btn df-choice-${color}" onclick="dfSubmitChoice(${seq},'${opt.value.replace(/'/g, "\\'")}')">` +
+      `${opt.label}</button>`;
+  });
+
+  wrapper.innerHTML = `
+    <div class="df-choice-card">
+      <div class="df-choice-title">${card.title || '请选择'}</div>
+      ${card.description ? `<div class="df-choice-desc">${card.description}</div>` : ''}
+      <div class="df-choice-options">${btnsHtml}</div>
+    </div>
+  `;
+  container.appendChild(wrapper);
+  container.scrollTop = container.scrollHeight;
+}
+
+async function dfSubmitChoice(seq, value) {
+  const state = _interactiveCardState;
+  if (!state || state.seq !== seq) return;
+  _interactiveCardState = null;
+
+  const choiceBox = document.getElementById('df-choice-box-' + seq);
+  if (choiceBox) {
+    choiceBox.querySelectorAll('.df-choice-btn').forEach(btn => btn.className = 'df-choice-btn');
+    const clicked = choiceBox.querySelector(`[onclick*="'${value}'"]`);
+    if (clicked) clicked.classList.add('selected', 'df-choice-blue');
+    choiceBox.querySelector('.df-choice-card').classList.add('df-choice-submitted');
+  }
+
+  dfAddMsg('user', '👉 ' + value);
+  _dfBusy = true;
+  document.getElementById('df-send-btn').disabled = true;
+  document.getElementById('df-status').textContent = '执行中...';
+
+  const confirmedArgs = { ...state.toolArgs };
+  confirmedArgs[state.resultKey] = value;
+
+  try {
+    const body = {
+      confirmed_tool: {
+        tool: state.toolName,
+        args: confirmedArgs,
+        tool_call_id: state.toolCallId,
+      },
+      input: '',
+    };
+    if (_dfSessionId) body.session_id = _dfSessionId;
+
+    const resp = await fetch('/api/datafirst/stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!resp.ok || !resp.body) {
+      return await _dfSendLegacy(body);
+    }
+    await _dfConsumeStream(resp);
+  } catch (e) {
+    dfAddMsg('system', '❌ 提交失败: ' + e.message);
+  } finally {
+    _dfBusy = false;
+    document.getElementById('df-send-btn').disabled = false;
   }
 }
 

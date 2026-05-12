@@ -46,7 +46,7 @@ Agent 是整个工作流引擎的"大脑"——接收用户自然语言输入，
     ┌────┼────────────┐
     ▼    ▼            ▼
   Skills Memory    ToolRegistry
-  Loader  Store     (23 tools)
+  Loader  Store     (29 tools)
     │       │           │
     ▼       ▼           ▼
   .md     JSON     asyncio.gather
@@ -70,8 +70,8 @@ Agent 的核心类，协调 LLM、工具、Session、记忆、技能。
 ```python
 class PlanningAgent:
     llm: AsyncOpenAI          # 通义千问 qwen-plus
-    tools: ToolRegistry       # 23 个注册工具
-    skills: SkillLoader       # 10 份领域知识 Markdown
+    tools: ToolRegistry       # 29 个注册工具
+    skills: SkillLoader       # 三层技能架构（2 Core + 9 Skills + 26 .md）
     memory: MemoryStore       # 经验记忆（JSON 文件）
     sessions: SessionStore    # 会话持久化（SQLite）
     max_iterations: int = 15  # ReAct 最大轮次
@@ -196,26 +196,75 @@ execute(name, arguments, confirmed)
   └─ 5. 返回工具结果 dict
 ```
 
-### 3.5 SkillLoader (`skill_loader.py`)
+### 3.5 SkillLoader (`skill_loader.py`) — 三层技能架构
 
-领域知识注入系统，将 Markdown 文件作为 few-shot context 注入 system prompt。
+领域知识注入系统，仿照 Claude Code 的 Skill 机制设计为三层按需加载架构，大幅减少 system prompt 体积（85-91% 减少）。
+
+**三层架构**：
+
+| 层 | 注入方式 | 内容 | 体积 |
+|----|---------|------|------|
+| **Layer 1: Core Rules** | 始终注入 system prompt | 硬规则（类型映射表 + 强制规则 + 反模式） | ~2K chars/mode |
+| **Layer 2: Skill Catalog** | 始终注入 system prompt | 技能索引表（名称 + 一句话描述 + sections 列表） | ~500 chars/mode |
+| **Layer 3: Skill Detail** | Agent 通过 `get_skill_detail` 工具按需加载 | 完整规则、few-shot、配置表、示例 | 按需 1-4K/section |
+
+**目录结构**：
 
 ```
 src/backend/agent/skills/
-├── dag-quality-rules.md         # DAG 质量规则（20 条）
-├── node-type-guide.md           # 节点类型配置指南
-├── data-first-flow.md           # 数据接入标准流程
-├── ontology-design-rules.md     # 本体设计规范
-├── field-mapping-rules.md       # 字段映射规则
-├── common-patterns.md           # 常见工作流模式
-├── data-flow-conventions.md     # 数据流引用约定
-├── error-handling-guide.md      # 错误处理策略
+├── _core/                       # Layer 1: 核心规则（始终注入）
+│   ├── workflow-rules.md        #   workflow 模式硬规则
+│   └── datafirst-rules.md       #   datafirst 模式硬规则
+├── dag-quality/                 # Layer 3: DAG 质量规则
+│   ├── SKILL.md                 #   摘要 + frontmatter
+│   └── references/
+│       ├── validate-errors.md   #   17 errors + 3 warnings
+│       └── fix-examples.md      #   2 个修正 few-shot
+├── node-types/                  # Layer 3: 节点类型配置
+│   ├── SKILL.md
+│   └── references/
+│       ├── configs.md           #   7 种节点类型完整配置
+│       ├── registries.md        #   tool_id + function_id 注册表
+│       └── cost-table.md        #   成本估算表
+├── common-patterns/             # Layer 3: 常见 DAG 模式
+├── data-flow/                   # Layer 3: 数据传递 + 错误处理
+├── ontology-design/             # Layer 3: 本体设计规范
+├── exploration-flow/            # Layer 3: 对象探查流程
+├── field-mapping/               # Layer 3: 字段映射规则
 └── domain/
-    ├── data-quality.md          # 数据质量场景
-    └── supply-chain.md          # 供应链场景
+    ├── supply-chain/            # Layer 3: 供应链领域
+    └── data-quality/            # Layer 3: 数据质量领域
 ```
 
-加载策略：关键词匹配 + 默认注入（dag-quality-rules、node-type-guide 始终加载），每次最多 3 份。
+**Frontmatter 协议**（SKILL.md）：
+```yaml
+---
+name: dag-quality
+description: DAG 质量校验规则和修正示例
+mode: workflow          # workflow | datafirst | all
+catalog: DAG 结构校验规则（sections: "validate-errors", "fix-examples"）
+sections:
+  - validate-errors: 17 个校验错误码及其含义
+  - fix-examples: 2 个修正前后对比
+---
+```
+
+**加载流程**：
+```
+PlanningAgent.__init__()
+  → SkillLoader(skills_dir)
+  → _load_core_rules() — 扫描 _core/*.md，按 mode 过滤
+  → _load_skills() — rglob("SKILL.md")，解析 frontmatter + references/
+
+_build_system_messages(mode)
+  → skills.load_core(mode) — Layer 1 注入
+  → skills.load_catalog(mode) — Layer 2 注入
+
+Agent ReAct Loop
+  → LLM 看到 catalog 中的技能列表
+  → 决定需要详情 → 调用 get_skill_detail(skill_name, section)
+  → 获取 Layer 3 完整内容 → 继续推理
+```
 
 ### 3.6 MemoryStore (`memory_store.py`)
 
@@ -246,7 +295,9 @@ api_delete(path)          # DELETE 请求
 
 ## 4. 工具清单
 
-### Workflow 模式工具（8 个）
+### Workflow 模式工具（全部 29 个）
+
+Workflow 模式不限制工具集，Agent 可调用所有注册工具（含 DataFirst 工具）。常用：
 
 | 工具 | 类型 | 说明 |
 |------|------|------|
@@ -258,26 +309,31 @@ api_delete(path)          # DELETE 请求
 | `query_table_schema` | 查询 | 数据库表结构 |
 | `estimate_cost` | 查询 | 工作流执行成本估算 |
 | `recall_memory` | 查询 | 搜索历史记忆 |
+| `get_skill_detail` | 查询 | 按需查询领域知识（三层技能 Layer 3） |
 
-### DataFirst 模式工具（15 个）
+### DataFirst 模式工具（19 个，白名单过滤）
 
-| 工具 | 类型 | 确认 | Pydantic | 说明 |
-|------|------|------|----------|------|
-| `list_datasources` | 查询 | - | - | 列出数据源 |
-| `list_tables` | 查询 | - | - | 列出表 |
-| `scan_table_columns` | 查询 | - | - | 扫描列元数据 |
-| `list_object_types` | 查询 | - | - | 列出已有 ObjectType |
-| `ai_infer_properties` | 查询 | - | - | AI 推断属性 |
-| `get_object_type_detail` | 查询 | - | - | ObjectType 详情 |
-| `get_field_mappings` | 查询 | - | - | 字段映射建议 |
-| `create_object_type` | 写入 | ✅ | ✅ | 创建 + 定稿 + 发布 |
-| `update_object_type_properties` | 写入 | ✅ | ✅ | 补充属性 |
-| `finalize_and_publish` | 写入 | ✅ | ✅ | 定稿发布 |
-| `delete_object_type` | 写入 | ✅ | ✅ | 删除（不可逆） |
-| `create_fabric_task` | 写入 | ✅ | ✅ | 创建编织任务 |
-| `trigger_ai_analysis` | 写入 | - | - | 触发 AI 分析 |
-| `generate_pipeline` | 写入 | ✅ | ✅ | 生成 Pipeline |
-| `save_to_memory` | 写入 | - | - | 手动保存记忆 |
+| 工具 | 类型 | 确认 | 说明 |
+|------|------|------|------|
+| `list_datasources` | 查询 | - | 列出数据源 |
+| `list_tables` | 查询 | - | 列出表 |
+| `scan_table_columns` | 查询 | - | 扫描列元数据 |
+| `list_object_types` | 查询 | - | 列出已有 ObjectType |
+| `get_object_type_detail` | 查询 | - | ObjectType 详情 |
+| `ai_infer_properties` | 查询 | - | AI 推断属性 |
+| `get_field_mappings` | 查询 | - | 字段映射建议 |
+| `create_object_type` | 写入 | ✅ | 创建 + 定稿 + 发布 |
+| `update_object_type_properties` | 写入 | ✅ | 补充属性 |
+| `finalize_and_publish` | 写入 | ✅ | 定稿发布 |
+| `delete_object_type` | 写入 | ✅ | 删除（不可逆） |
+| `submit_compare_decisions` | 写入 | ✅ | 提交对象探查决策 |
+| `confirm_field_mappings` | 写入 | ✅ | 确认字段映射 |
+| `create_fabric_task` | 写入 | ✅ | 创建编织任务 |
+| `trigger_ai_analysis` | 写入 | - | 触发 AI 分析 |
+| `generate_pipeline` | 写入 | ✅ | 生成 Pipeline |
+| `submit_pipeline` | 写入 | ✅ | 提交 Pipeline |
+| `ask_user_choice` | 交互 | - | 向用户展示选项 |
+| `get_skill_detail` | 查询 | - | 按需查询领域知识（三层技能 Layer 3） |
 
 ---
 
@@ -343,33 +399,41 @@ src/backend/agent/
 ├── tool_registry.py        # 工具注册 + Pydantic 校验 + 超时执行
 ├── api_client.py           # zhice-paas HTTP 客户端
 ├── memory_store.py         # 经验记忆（JSON 文件）
-├── skill_loader.py         # 领域知识加载（Markdown）
+├── skill_loader.py         # 三层技能加载器（Core / Catalog / Detail）
 ├── __init__.py             # 自动触发 @tool 注册
-├── tools/
+├── tools/                  # 29 个工具（@tool 装饰即注册）
 │   ├── __init__.py
 │   ├── validate_dag.py     # DAG 校验（Kahn 环检测）
 │   ├── datasource_tools.py # 3 个数据源查询工具
-│   ├── ontology_tools.py   # 7 个本体操作工具（6 个有 Pydantic）
-│   ├── fabric_tools.py     # 4 个数据编织工具（2 个有 Pydantic）
+│   ├── ontology_tools.py   # 9 个本体操作工具
+│   ├── fabric_tools.py     # 5 个数据编织工具
+│   ├── interaction_tools.py # ask_user_choice
+│   ├── skill_tools.py      # get_skill_detail（三层技能 Layer 3 入口）
+│   ├── memory_tools.py     # save_to_memory, recall_memory
 │   ├── estimate_cost.py    # 成本估算
 │   ├── check_compatibility.py  # 输出兼容性检查
 │   ├── search_workflows.py # 工作流搜索
-│   ├── memory_tools.py     # 记忆读写
 │   ├── list_tools.py       # 系统工具列表
 │   ├── list_functions.py   # 可用函数列表
 │   └── query_schema.py     # 表结构查询
-└── skills/
-    ├── dag-quality-rules.md
-    ├── node-type-guide.md
-    ├── data-first-flow.md
-    ├── ontology-design-rules.md
-    ├── field-mapping-rules.md
-    ├── common-patterns.md
-    ├── data-flow-conventions.md
-    ├── error-handling-guide.md
+└── skills/                 # 三层领域知识体系（26 .md 文件）
+    ├── _core/              # Layer 1: 核心规则（始终注入）
+    │   ├── workflow-rules.md
+    │   └── datafirst-rules.md
+    ├── dag-quality/        # Layer 3: 按需查询
+    │   ├── SKILL.md
+    │   └── references/
+    │       ├── validate-errors.md
+    │       └── fix-examples.md
+    ├── node-types/
+    ├── common-patterns/
+    ├── data-flow/
+    ├── ontology-design/
+    ├── exploration-flow/
+    ├── field-mapping/
     └── domain/
-        ├── data-quality.md
-        └── supply-chain.md
+        ├── supply-chain/
+        └── data-quality/
 ```
 
 ---
@@ -409,7 +473,7 @@ Turn 3: "确认创建"
 | 扩展点 | 做法 |
 |--------|------|
 | 新增工具 | `tools/` 下新建文件，用 `@tool` 装饰即可自动注册 |
-| 新增领域知识 | `skills/` 下新建 `.md`，SkillLoader 自动扫描加载 |
+| 新增领域知识 | `skills/{name}/` 下新建 `SKILL.md` + `references/`，SkillLoader 自动扫描 |
 | 新增节点类型 | `executors/` 下实现 `NodeExecutor` SPI 接口 |
 | 加强参数校验 | 给 `@tool` 添加 `args_model=PydanticModel` |
 | 新增运行模式 | planner.py 中新增 PROMPT_TEMPLATE + 工具集 |

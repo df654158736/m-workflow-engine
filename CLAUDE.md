@@ -127,10 +127,10 @@
     (ReAct)   (多轮持久)  (DAG 编排)
        │                     │
        ▼                     ▼ 多队列分发
-   10 Tools ──→ zhice-paas   ┌──────────────────┐
+   29 Tools ──→ zhice-paas   ┌──────────────────┐
    (真实API)    web-app      │ LLM / Tool /     │
-                :6682        │ FlinkSQL / etc.  │
-                             └──────────────────┘
+   + Skills     :6682        │ FlinkSQL / etc.  │
+   (三层架构)                └──────────────────┘
 ```
 
 ## 两种 Agent 模式
@@ -173,7 +173,7 @@
 | SPI | `src/backend/spi.py` | ABC | NodeExecutor 抽象接口 |
 | Executors | `src/backend/executors/` | Python | 6 种节点执行器（LLM/Tool/FlinkSQL/Function/Condition/Approval） |
 | Temporal | `src/backend/temporal/` | temporalio | Workflow 编排、Activity 分发、Worker 管理 |
-| Agent | `src/backend/agent/` | OpenAI SDK | Planning Agent（ReAct Loop + 10 Tools + 7 Skills + Memory） |
+| Agent | `src/backend/agent/` | OpenAI SDK | Planning Agent（ReAct Loop + 29 Tools + 三层 Skills + Memory） |
 | Session | `src/backend/agent/session.py` | Python dict | 服务端会话存储（messages 持久化 + 压缩 + 过期清理） |
 | Frontend | `src/frontend/index.html` | Vanilla HTML/JS | DAG 可视化 + 执行时间线 + 数据接入 Chat UI |
 
@@ -200,21 +200,31 @@ src/backend/
 │   ├── activities.py
 │   └── worker.py
 └── agent/                 # Planning Agent
-    ├── planner.py         # ReAct Loop + Session 对话
-    ├── session.py         # Session 存储与管理
+    ├── planner.py         # ReAct Loop + Session 多轮对话
+    ├── session.py         # Session 持久化（SQLite WAL）
     ├── api_client.py      # zhice-paas REST API 客户端
-    ├── memory_store.py    # 持久化记忆
-    ├── skill_loader.py    # Skill 加载
-    ├── tool_registry.py   # Tool 注册（含 only 过滤）
-    ├── tools/             # 可执行工具
-    │   ├── planning_tools.py    # DAG 校验、工具列表（workflow 模式）
-    │   ├── datasource_tools.py  # list_datasources, list_tables, scan_table_columns
-    │   ├── ontology_tools.py    # list_object_types, create_object_type, ai_infer_properties
-    │   └── fabric_tools.py      # create_fabric_task, trigger_ai_analysis, get_field_mappings, generate_pipeline
-    └── skills/            # 领域知识（Markdown）
-        ├── data-first-flow.md
-        ├── ontology-design-rules.md
-        └── field-mapping-rules.md
+    ├── memory_store.py    # 经验记忆（JSON 文件）
+    ├── skill_loader.py    # 三层技能加载器（Core / Catalog / Detail）
+    ├── tool_registry.py   # Tool 注册 + Pydantic 校验 + 超时执行
+    ├── tools/             # 可执行工具（29 个，@tool 装饰即注册）
+    │   ├── validate_dag.py      # DAG 校验（Kahn 环检测）
+    │   ├── datasource_tools.py  # 3 个数据源查询工具
+    │   ├── ontology_tools.py    # 9 个本体操作工具
+    │   ├── fabric_tools.py      # 5 个数据编织工具
+    │   ├── interaction_tools.py # ask_user_choice（交互选择）
+    │   ├── skill_tools.py       # get_skill_detail（三层技能 Layer 3 入口）
+    │   ├── memory_tools.py      # save_to_memory, recall_memory
+    │   └── ...                  # estimate_cost, search_workflows, list_tools 等
+    └── skills/            # 三层领域知识体系
+        ├── _core/               # Layer 1: 核心规则（始终注入 ~2K chars/mode）
+        │   ├── workflow-rules.md
+        │   └── datafirst-rules.md
+        ├── {skill}/             # Layer 3: 按需查询（Agent 调用 get_skill_detail）
+        │   ├── SKILL.md         # 摘要 + frontmatter（含 catalog 字段）
+        │   └── references/      # 详细内容（section 粒度按需加载）
+        └── domain/              # 领域子目录
+            ├── supply-chain/
+            └── data-quality/
 
 src/frontend/
 └── index.html             # 单文件 UI（3 Tab：Agent / 预设 / 数据接入 Chat）
@@ -223,20 +233,29 @@ config.yaml                # 模板配置（提交到 git，占位符值）
 config.local.yaml          # 真实配置（.gitignore，含 API key / project_id）
 ```
 
-### DataFirst 工具清单（10 个）
+### DataFirst 工具清单（19 个）
 
-| 工具 | 类型 | 说明 |
-|------|------|------|
-| `list_datasources` | 查询 | 列出已接入的数据源 |
-| `list_tables` | 查询 | 列出数据源中的所有表 |
-| `scan_table_columns` | 查询 | 扫描表的列元数据 |
-| `list_object_types` | 查询 | 列出已有 ObjectType |
-| `ai_infer_properties` | 查询 | AI 推荐 ObjectType 属性 |
-| `create_object_type` | 写入 | 创建 ObjectType（自动 create → finalize → publish） |
-| `create_fabric_task` | 写入 | 创建数据编织任务 |
-| `trigger_ai_analysis` | 写入 | 触发 AI 语义分析 |
-| `get_field_mappings` | 查询 | 获取字段映射建议 |
-| `generate_pipeline` | 写入 | 生成 Pipeline DSL |
+| 工具 | 类型 | 确认 | 说明 |
+|------|------|------|------|
+| `list_datasources` | 查询 | - | 列出已接入的数据源 |
+| `list_tables` | 查询 | - | 列出数据源中的所有表 |
+| `scan_table_columns` | 查询 | - | 扫描表的列元数据 |
+| `list_object_types` | 查询 | - | 列出已有 ObjectType |
+| `get_object_type_detail` | 查询 | - | ObjectType 详情 |
+| `ai_infer_properties` | 查询 | - | AI 推断属性 |
+| `create_object_type` | 写入 | ✅ | 创建 + 定稿 + 发布 |
+| `update_object_type_properties` | 写入 | ✅ | 补充属性 |
+| `finalize_and_publish` | 写入 | ✅ | 定稿发布 |
+| `delete_object_type` | 写入 | ✅ | 删除（不可逆） |
+| `submit_compare_decisions` | 写入 | ✅ | 提交探查决策 |
+| `confirm_field_mappings` | 写入 | ✅ | 确认字段映射 |
+| `create_fabric_task` | 写入 | ✅ | 创建数据编织任务 |
+| `trigger_ai_analysis` | 写入 | - | 触发 AI 语义分析 |
+| `get_field_mappings` | 查询 | - | 获取字段映射建议 |
+| `generate_pipeline` | 写入 | ✅ | 生成 Pipeline DSL |
+| `submit_pipeline` | 写入 | ✅ | 提交 Pipeline |
+| `ask_user_choice` | 交互 | - | 向用户展示选项 |
+| `get_skill_detail` | 查询 | - | 按需查询领域知识（三层技能 Layer 3） |
 
 - 依赖管理：`pyproject.toml`
 - 测试：`pytest` + `pytest-asyncio`

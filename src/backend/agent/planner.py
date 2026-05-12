@@ -112,6 +112,11 @@ DATAFIRST_TOOLS = {
     "trigger_ai_analysis",
     "get_field_mappings",
     "generate_pipeline",
+    "submit_compare_decisions",
+    "confirm_field_mappings",
+    "submit_pipeline",
+    "ask_user_choice",
+    "get_skill_detail",
 }
 
 DATAFIRST_PROMPT_TEMPLATE = """你是一个数据接入助手 Agent。用户用自然语言描述数据接入需求，你通过调用工具完成全流程。
@@ -151,15 +156,24 @@ DATAFIRST_PROMPT_TEMPLATE = """你是一个数据接入助手 Agent。用户用�
 
 ### 本体补全工具（处理半成品 ObjectType）
 - `get_object_type_detail` — 查看 ObjectType 详情：当前状态（EDITING/DRAFT/ACTIVE）、已有属性、数据映射
-- `update_object_type_properties` — 向已有 ObjectType 逐个添加缺失的属性（每次加一个）
+- `update_object_type_properties` — 向已有 ObjectType 批量添加属性（⚠️ 交互式卡片，一次传所有缺失属性，用户勾选后提交）
 - `finalize_and_publish` — 将 EDITING/DRAFT 状态的 ObjectType 定稿发布为 ACTIVE
 - `delete_object_type` — 删除 ObjectType 及所有关联资源（⚠️ 不可逆，必须用户确认）
 
-### 数据编织工具（仅在手动编织时使用，create_object_type 已自动处理）
-- `create_fabric_task` — 手动创建数据编织任务（通常不需要，create_object_type 传了 datasource_id 会自动创建）
-- `trigger_ai_analysis` — 触发 AI 语义分析，返回候选对象
+### 数据编织工具
+- `create_fabric_task` — 创建数据编织任务
+- `trigger_ai_analysis` — 触发 AI 语义分析，返回候选对象列表
 - `get_field_mappings` — 获取/生成字段映射建议
-- `generate_pipeline` — 生成 Pipeline DSL（通常不需要，create_object_type 会自动生成 Pipeline）
+- `generate_pipeline` — 生成 Pipeline DSL
+- `submit_pipeline` — 将 Pipeline 注册到系统并可选立即运行（⚠️ 写操作，需用户确认）
+- `submit_compare_decisions` — 对候选对象批量提交确认/驳回/新建决策（⚠️ 交互式卡片，需用户点击确认）
+- `confirm_field_mappings` — 对字段映射进行交互式确认/跳过（⚠️ 交互式卡片，需用户点击确认）
+
+### 交互工具
+- `ask_user_choice` — 向用户弹出选择按钮（⚠️ 交互式卡片）
+  - **必须用此工具代替文字提问**。需要用户做决策时（是否继续、选方案、确认/取消），调此工具弹出按钮，不要让用户打字回答。
+  - 参数: question（问题文字）、options（选项列表，每项含 value/label/color 字段）
+  - 用户点击后 choice 字段会自动填入用户的选择
 
 ## 标准流程（仅在新需求时从头开始）
 
@@ -182,7 +196,7 @@ DATAFIRST_PROMPT_TEMPLATE = """你是一个数据接入助手 Agent。用户用�
 1. **查详情** → `get_object_type_detail` 查看当前已有哪些属性、缺什么
 2. **对比表结构** → 如有 datasource_id，用 `scan_table_columns` 获取表列，与已有属性对比找出缺失项
 3. **向用户展示** → 告知"该 ObjectType 已存在，状态为 X，已有 N 个属性，缺少以下属性：…"
-4. **补全属性** → 用户确认后，用 `update_object_type_properties` 逐个添加缺失属性
+4. **补全属性** → 用户确认后，用 `update_object_type_properties` 一次性传入所有缺失属性（批量添加，只弹一次确认）
 5. **定稿发布** → 属性补全后，调 `finalize_and_publish` 将其推进到 ACTIVE 状态
 
 **判断逻辑**：
@@ -197,6 +211,7 @@ DATAFIRST_PROMPT_TEMPLATE = """你是一个数据接入助手 Agent。用户用�
 2. **渐进式推进** — 每步完成后汇报结果，等用户确认再继续下一步
 3. **错误恢复** — API 报错时，向用户说明原因并给出替代方案
 4. **已有资源复用** — 操作前先查询已有资源，避免重复创建
+5. **禁止文字提问** — 需要用户做选择/决策/确认时，必须调 `ask_user_choice` 弹出按钮，不要用文字提问让用户打字回答。每次展示方案或汇报结果后，立即调 ask_user_choice 让用户点按钮决定下一步。
 
 ## 复杂任务规划（Plan-then-Execute）
 
@@ -217,12 +232,32 @@ DATAFIRST_PROMPT_TEMPLATE = """你是一个数据接入助手 Agent。用户用�
 
 对于简单的单步需求（如"查一下有哪些数据源"），直接执行即可，不需要规划。
 
+## 本体对象探查流程（多表批量分析）
+
+当用户要求"探查"、"分析这些表"、"批量发现本体对象"时，使用探查流程（而非一步到位的 create_object_type）：
+
+1. **创建编织任务** → `create_fabric_task`
+2. **触发 AI 分析** → `trigger_ai_analysis`，获取候选对象列表（每个候选有 id、名称、匹配状态、置信度、来源表）
+3. **提交建议决策** → `submit_compare_decisions`，传入 task_id 和每个候选的建议决策
+   - 系统会自动弹出交互式卡片，用户在卡片中逐个点击确认/驳回/新建
+   - 用户提交后，你会收到最终的决策结果（用户可能修改你的建议）
+4. **生成字段映射** → 对每个已确认的对象，先调 `get_field_mappings` 获取映射列表，再调 `confirm_field_mappings` 弹出交互卡片让用户确认
+   - `confirm_field_mappings` 会自动弹出交互式卡片，用户在卡片中逐个确认/跳过每个字段映射
+   - decisions 的 key 是 get_field_mappings 返回的映射 id，value 是 CONFIRM 或 SKIP
+   - AI_SUGGESTED 状态的映射建议设为 CONFIRM
+5. **生成 Pipeline** → 调 `generate_pipeline`
+6. **提交并运行** → 调 `submit_pipeline` 将 Pipeline 注册到系统并触发运行
+
+> 注意：`submit_compare_decisions` 会自动从后端查询候选对象并构造交互卡片，你只需传 task_id 和 decisions。
+> decisions 中的 key 是 `trigger_ai_analysis` 返回的候选 id，value 是你的建议（MAPPED/MATCHABLE → CONFIRM，NEW → CREATE）。
+
 ## 回复风格
 
 - 简洁明了，不要长篇大论
 - 展示工具调用的关键结果，不要原样输出 JSON
 - 方案展示用表格格式（属性名、类型、说明）
 - 每步完成后，告诉用户下一步是什么
+- **绝对禁止用文字向用户提问或列选项让用户打字回答**。任何需要用户做选择的地方（"请选择"、"你倾向哪种"、"是否继续"），必须立即调 `ask_user_choice` 弹出按钮。违反此规则 = 任务失败。
 
 {skills_context}
 """
@@ -269,6 +304,8 @@ class PlanningAgent:
         self.model = model
         self.tools = tool_registry or get_registry()
         self.skills = skill_loader or SkillLoader()
+        from backend.agent.tools.skill_tools import set_skill_loader
+        set_skill_loader(self.skills)
         self.memory = get_memory_store()
         self.sessions = get_session_store()
         self.max_iterations = max_iterations
@@ -300,7 +337,7 @@ class PlanningAgent:
 
     def _build_system_messages(self, user_input: str, mode: str) -> list[dict[str, Any]]:
         """构建 system prompt messages。"""
-        skills_context = self.skills.load_relevant(user_input)
+        skills_context = self.skills.load_relevant(user_input, mode=mode)
         template = DATAFIRST_PROMPT_TEMPLATE if mode == "datafirst" else SYSTEM_PROMPT_TEMPLATE
         system_prompt = template.format(
             skills_context=f"\n## 领域知识\n\n{skills_context}" if skills_context else ""
@@ -503,7 +540,7 @@ class PlanningAgent:
                                 }, ensure_ascii=False),
                             })
                             if not pending_confirmation:
-                                pending_confirmation = (tc, fn_name, fn_args)
+                                pending_confirmation = (tc, fn_name, fn_args, tool_result)
                             continue
 
                         result_str = json.dumps(tool_result, ensure_ascii=False)
@@ -514,15 +551,26 @@ class PlanningAgent:
                         })
 
                     if pending_confirmation:
-                        tc, fn_name, fn_args = pending_confirmation
+                        tc, fn_name, fn_args, conf_result = pending_confirmation
                         result.success = True
-                        result.yaml_text = f"操作 '{fn_name}' 需要您确认后才能执行。"
                         result.requires_confirmation = True
-                        result.pending_tool = {
-                            "tool": fn_name,
-                            "args": fn_args,
-                            "tool_call_id": tc.id,
-                        }
+                        conf_type = conf_result.get("confirmation_type")
+                        if conf_type == "interactive_card" and conf_result.get("card_data"):
+                            result.yaml_text = f"操作 '{fn_name}' 需要用户通过交互卡片确认。"
+                            result.pending_tool = {
+                                "tool": fn_name,
+                                "args": fn_args,
+                                "tool_call_id": tc.id,
+                                "confirmation_type": conf_type,
+                                "card_data": conf_result["card_data"],
+                            }
+                        else:
+                            result.yaml_text = f"操作 '{fn_name}' 需要您确认后才能执行。"
+                            result.pending_tool = {
+                                "tool": fn_name,
+                                "args": fn_args,
+                                "tool_call_id": tc.id,
+                            }
                         result.iterations = iteration + 1
                         return result
 
@@ -824,7 +872,7 @@ class PlanningAgent:
                             }, ensure_ascii=False),
                         })
                         if not pending_confirmation:
-                            pending_confirmation = (tc_id, fn_name, fn_args)
+                            pending_confirmation = (tc_id, fn_name, fn_args, tool_result)
                         continue
 
                     result_str = json.dumps(tool_result, ensure_ascii=False)
@@ -839,12 +887,24 @@ class PlanningAgent:
                     })
 
                 if pending_confirmation:
-                    tc_id, fn_name, fn_args = pending_confirmation
-                    yield AgentEvent(type="confirmation", data={
-                        "tool": fn_name,
-                        "args": fn_args,
-                        "tool_call_id": tc_id,
-                    })
+                    tc_id, fn_name, fn_args, conf_result = pending_confirmation
+                    conf_type = conf_result.get("confirmation_type")
+                    logger.info("Pending confirmation: tool=%s, conf_type=%s, has_card_data=%s, result_keys=%s",
+                                fn_name, conf_type, "card_data" in conf_result, list(conf_result.keys()))
+                    if conf_type == "interactive_card" and conf_result.get("card_data"):
+                        logger.info("Sending SSE interactive_card event for tool=%s", fn_name)
+                        yield AgentEvent(type="interactive_card", data={
+                            "tool": fn_name,
+                            "args": fn_args,
+                            "tool_call_id": tc_id,
+                            "card_data": conf_result["card_data"],
+                        })
+                    else:
+                        yield AgentEvent(type="confirmation", data={
+                            "tool": fn_name,
+                            "args": fn_args,
+                            "tool_call_id": tc_id,
+                        })
                     return
                 continue
 

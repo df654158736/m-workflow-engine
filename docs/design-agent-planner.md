@@ -64,24 +64,37 @@ Agent 通过 function calling 调用，每个 Tool 有明确的 input/output sch
 
 **扩展方式**：新建一个 Tool 类，注册到 ToolRegistry，Agent 自动可见。
 
-### 2. Skills（领域知识）
+### 2. Skills（领域知识）— 三层按需加载架构
 
-以 Markdown 文件形式存放，Agent 规划前按需加载到 context。
+仿照 Claude Code 的 Skill 机制，将领域知识从"始终全量注入"改为"三层按需加载"，减少 85-91% 的 system prompt 体积。
 
 ```
 skills/
-├── dag-quality-rules.md         # DAG 质量规则（必须遵守）
-├── node-type-guide.md           # 各节点类型的最佳实践
-├── common-patterns.md           # 常见工作流模式（审批流、ETL、告警...）
-├── error-handling-guide.md      # on_error 策略选择指南
-├── data-flow-conventions.md     # 数据传递规范
+├── _core/                       # Layer 1: 核心规则（始终注入 ~2K chars/mode）
+│   ├── workflow-rules.md        #   输出字段表 + 7 条强制规则 + 4 条反模式
+│   └── datafirst-rules.md       #   SQL→本体映射表 + 决策树 + 反模式
+├── dag-quality/                 # Layer 3: Agent 通过 get_skill_detail 按需查询
+│   ├── SKILL.md                 #   摘要 + frontmatter（含 catalog 字段）
+│   └── references/              #   详细内容（section 粒度加载）
+│       ├── validate-errors.md
+│       └── fix-examples.md
+├── node-types/                  # configs / registries / cost-table
+├── common-patterns/             # 5 种 DAG 模式 + 反模式
+├── data-flow/                   # 数据传递约定 + 错误处理策略
+├── ontology-design/             # 设计示例 + AI 修正规则
+├── exploration-flow/            # 6 步探查 few-shot + 属性补全
+├── field-mapping/               # 字段映射规则
 └── domain/
-    ├── supply-chain.md          # 供应链领域知识
-    ├── data-quality.md          # 数据治理领域知识
-    └── procurement.md           # 采购领域知识
+    ├── supply-chain/            # 供应链工作流模板
+    └── data-quality/            # 数据质量工作流模板
 ```
 
-**扩展方式**：新建 .md 文件放入 skills/ 目录，Agent 按需加载。
+**三层加载机制**：
+- **Layer 1 (Core)**：始终注入 system prompt 的硬规则，按 mode 过滤
+- **Layer 2 (Catalog)**：始终注入的索引表，Agent 看到技能名 + 一句话描述 + sections 列表
+- **Layer 3 (Detail)**：Agent 通过 `get_skill_detail(skill_name, section)` 工具按需加载完整内容
+
+**扩展方式**：新建 `skills/{name}/SKILL.md` + `references/*.md`，SkillLoader 自动扫描。
 
 ### 3. Memory（经验积累）
 
@@ -186,27 +199,34 @@ Layer 5: 人工确认       → 用户看 DAG 预览后决定是否执行（最�
 
 ```
 src/backend/
-├── agent/                          # ← 新增：Planning Agent
+├── agent/                          # Planning Agent
 │   ├── __init__.py
-│   ├── planner.py                  # ReAct Loop 核心
-│   ├── tool_registry.py            # Tool 注册与发现
-│   ├── skill_loader.py             # Skill 加载器
-│   ├── memory_store.py             # 经验记忆
-│   ├── tools/                      # 所有 Tools（可扩展）
+│   ├── planner.py                  # ReAct Loop 核心 + 两种模式入口
+│   ├── session.py                  # Session 持久化（SQLite WAL）
+│   ├── tool_registry.py            # Tool 注册 + Pydantic 校验 + 超时执行
+│   ├── skill_loader.py             # 三层技能加载器（Core / Catalog / Detail）
+│   ├── api_client.py               # zhice-paas REST API 客户端
+│   ├── memory_store.py             # 经验记忆（JSON 文件）
+│   ├── tools/                      # 29 个工具（@tool 装饰即注册）
 │   │   ├── __init__.py
-│   │   ├── validate_dag.py         # DAG 校验
-│   │   ├── list_tools.py           # 查询可用工具
-│   │   ├── list_functions.py       # 查询可用函数
-│   │   ├── query_schema.py         # 查询表结构
-│   │   ├── check_compatibility.py  # 输出兼容性检查
-│   │   ├── estimate_cost.py        # 成本估算
-│   │   └── search_workflows.py     # 搜索历史工作流
-│   └── skills/                     # 所有 Skills（可扩展）
-│       ├── dag-quality-rules.md
-│       ├── node-type-guide.md
-│       ├── common-patterns.md
-│       └── domain/
-│           └── supply-chain.md
+│   │   ├── validate_dag.py         # DAG 校验（Kahn 环检测）
+│   │   ├── datasource_tools.py     # 3 个数据源查询工具
+│   │   ├── ontology_tools.py       # 9 个本体操作工具
+│   │   ├── fabric_tools.py         # 5 个数据编织工具
+│   │   ├── interaction_tools.py    # ask_user_choice
+│   │   ├── skill_tools.py          # get_skill_detail（三层技能 Layer 3 入口）
+│   │   ├── memory_tools.py         # save_to_memory, recall_memory
+│   │   └── ...                     # estimate_cost, search_workflows 等
+│   └── skills/                     # 三层领域知识体系（26 .md 文件）
+│       ├── _core/                  # Layer 1: 核心规则（始终注入）
+│       │   ├── workflow-rules.md
+│       │   └── datafirst-rules.md
+│       ├── {skill}/                # Layer 3: 按需查询
+│       │   ├── SKILL.md            # 摘要 + frontmatter
+│       │   └── references/         # 详细内容（section 粒度）
+│       └── domain/                 # 领域子目录
+│           ├── supply-chain/
+│           └── data-quality/
 ├── server.py                       # API 层调用 agent.planner
 ├── ...
 ```
@@ -235,37 +255,43 @@ async def check_sql_syntax(sql: str) -> dict:
 
 注册后 Agent 自动可见，下次生成 FlinkSQL 节点时会主动调用校验。
 
-### 添加一个新 Skill（2 分钟）
+### 添加一个新 Skill（5 分钟）
+
+1. 创建目录 `skills/domain/finance/`
+2. 创建 `SKILL.md`（带 frontmatter）:
 
 ```markdown
-<!-- src/backend/agent/skills/domain/finance.md -->
-# 金融领域工作流规范
+---
+name: domain/finance
+description: 金融领域工作流规范和合规要求
+mode: workflow
+catalog: 金融合规规则（资金操作审批、风控评估模式）
+sections:
+  - compliance: 合规要求（审批规则、审计日志）
+  - patterns: 常见金融工作流模式
+---
 
-## 合规要求
-- 涉及资金操作的节点，前面必须有 Approval 节点
-- 金额超过 10 万的操作需要双人审批（两个串联 Approval）
-- 所有金融数据查询必须带 audit_log 参数
-
-## 常见模式
-- 风控评估：数据采集 → AI 评分 → 阈值判断 → 审批/放行
-- 对账流程：拉取双方数据 → 比对 → 差异标注 → 人工确认
+金融领域要求所有资金操作前置 Approval 节点，金额 > 10 万需双人审批。
 ```
 
-放入 skills/domain/ 后，Agent 在处理金融相关需求时自动加载。
+3. 创建 `references/compliance.md` 和 `references/patterns.md`（详细内容）
+
+SkillLoader 自动扫描发现，Agent 在 catalog 中看到索引后按需调用 `get_skill_detail("domain/finance", "compliance")` 获取完整规则。
 
 ---
 
-## 与当前 Demo 的差距
+## 当前实现状态
 
-| 维度 | 当前 Demo | 目标设计 |
-|------|----------|---------|
-| LLM 调用 | 1 次，无反馈 | ReAct 循环，最多 5 轮 |
-| 工具 | 无 | 8+ 个 Tools（可扩展） |
-| 知识 | 固定 system prompt | Skills 文件按需加载 |
-| 校验 | 生成后被动报错 | Agent 主动调用 validate_dag |
-| 修正 | 失败就返回错误 | Agent 自己修正再验证 |
-| 经验 | 无 | Memory 记录成功案例 |
-| 扩展性 | 改 prompt | 加文件即可 |
+| 维度 | 状态 | 说明 |
+|------|------|------|
+| ReAct Loop | ✅ 已实现 | 最多 15 轮，支持流式/非流式 |
+| 工具 | ✅ 29 个 | Pydantic 校验 + 确认机制 + 超时保护 |
+| 知识 | ✅ 三层架构 | Core + Catalog + Detail（按需加载，减少 85-91% token） |
+| 校验 | ✅ 主动校验 | Agent 生成后自动调 validate_dag |
+| 修正 | ✅ 自修正 | 发现错误后自动修正再验证 |
+| 经验 | ✅ Memory | JSON 文件存储成功/修正/偏好记忆 |
+| Session | ✅ SQLite | 多轮对话持久化 + 压缩 + 手动删除 |
+| 两种模式 | ✅ | Workflow（无状态） + DataFirst（有状态） |
 
 ---
 
