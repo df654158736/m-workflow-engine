@@ -24,10 +24,22 @@ mode: dag
 
 | action | steps 含义 | edges 含义 | 场景 |
 |--------|-----------|-----------|------|
-| `add` | 新增的节点 | 新增的边 | "加一个过滤节点" |
+| `add` | 新增的节点 | **改动后的完整边列表**（原有保留边 + 新增边） | "加一个过滤节点"、"在 A 和 B 之间插入 C" |
 | `modify` | 被修改的节点（只含 id + 变化字段） | 变化的边（可选） | "把过滤条件改成 >100" |
 | `remove` | 空，改用 `remove_node_ids: [...]` | 重连后的新边 | "删掉去重节点" |
 | `replace_all` | 完整 DAG 的全部节点 | 完整 DAG 的全部边 | "帮我生成完整流程" |
+
+## ⚠️ add 操作的 edges 是完整边列表（最重要的规则）
+
+`add_dag_node` 的 edges 参数是**改动后 DAG 的全部边**，前端会整体替换边数组。
+
+操作步骤：
+1. **先调 `read_dag_state`** 获取当前所有节点和边
+2. 在当前边列表基础上，去掉被新节点取代的旧边，加入新节点的连线
+3. 将结果作为 `edges` 传给 `add_dag_node`
+
+示例：当前边为 `[A→B, B→C]`，要在 B 和 C 之间插入 D：
+- edges = `[A→B, B→D, D→C]`（去掉旧的 B→C，加入 B→D 和 D→C）
 
 ## 节点 ID 规则
 
@@ -54,6 +66,33 @@ QUERY / TRANSFORM / WRITE / SQL_TRANSFORM / JOIN / UNION / WINDOW_AGGREGATION / 
 - `description` → `generic_config.description`
 - `label` → `generic_config.label`
 - `config` 的其余字段展开进 `generic_config`
+
+## 自动保存机制
+
+- 每次 add / modify / remove / replace_all 操作后，**前端自动将完整 DAG 同步到 zhice-paas**（1.5 秒防抖），无需手动调 `save_dag`
+- 用户说"保存"时直接回复"每次编辑已自动同步到 zhice-paas"
+- `save_dag` 仅作为自动保存失败时的兜底手段
+- **保存使用 `PUT /api/v1/pipelines/{id}/draft`（updateDraft 端点）**，直接就地更新，pipeline ID 不变
+
+## Pipeline 生命周期（必须知道）
+
+- **DRAFT**（草稿）：可编辑 DAG、可发布，**不可运行**
+- **PUBLISHED**（已发布）：只读、可运行、可 Fork，**不可编辑 DAG**（需先 unpublish 恢复为 DRAFT）
+- 编辑前必须检查 `pipeline_status`，PUBLISHED 状态调 save_dag 会被拒绝
+- 状态转换工具：`publish_pipeline`（DRAFT→PUBLISHED）、`unpublish_pipeline`（PUBLISHED→DRAFT）
+- Fork：`fork_pipeline` 创建独立 DRAFT 副本，不影响原 Pipeline
+
+## 保存端点变更
+
+- **旧端点**：`PUT /api/v1/pipelines/{id}`（updatePipeline）— 内部做 delete+recreate，ID 会变
+- **新端点**：`PUT /api/v1/pipelines/{id}/draft`（updateDraft）— 就地更新，ID 不变
+- `save_dag` 已改用新端点，pipeline ID 保持稳定
+- **连续多次编辑必须防抖**（1.5 秒），避免并发保存竞态
+
+## remove_dag_node 注意事项
+
+- 只需传 `node_id` + `pipeline_id`，工具内部自动从 API 读取当前 DAG 状态并计算重连
+- **不要让 LLM 构造 dag_state 参数** — LLM 容易遗漏字段导致校验失败
 
 ## 需要更多细节时
 

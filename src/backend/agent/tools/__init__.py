@@ -13,3 +13,4 @@ from backend.agent.tools.ontology_tools import list_object_types, create_object_
 from backend.agent.tools.fabric_tools import create_fabric_task, trigger_ai_analysis, get_field_mappings, generate_pipeline, submit_pipeline
 from backend.agent.tools.interaction_tools import ask_user_choice
 from backend.agent.tools.skill_tools import get_skill_detail, set_skill_loader
+from backend.agent.tools.dag_editing_tools import read_dag_state, add_dag_node, modify_dag_node, remove_dag_node, generate_full_dag, save_dag, publish_pipeline, unpublish_pipeline, fork_pipeline

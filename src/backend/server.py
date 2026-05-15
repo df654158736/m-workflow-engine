@@ -615,6 +615,125 @@ async def datafirst_delete_session(session_id: str):
     return {"success": True}
 
 
+# ── DAG 保存（前端自动同步到 zhice-paas）──────────────────────
+
+@app.post("/api/dag-save")
+async def dag_save(payload: dict[str, Any]):
+    """将前端编辑后的 DAG 保存到 zhice-paas web-app。"""
+    pipeline_id = payload.get("pipeline_id", "")
+    dag_state = payload.get("dag_state", {})
+    if not pipeline_id or not dag_state:
+        return {"success": False, "error": "pipeline_id 和 dag_state 必填"}
+
+    import json as _json
+    logger.info(f"[dag-save] pipeline_id={pipeline_id}")
+    logger.info(f"[dag-save] nodes={_json.dumps([n.get('id') + '(' + n.get('type','') + ')' for n in dag_state.get('nodes', [])], ensure_ascii=False)}")
+    logger.info(f"[dag-save] edges={_json.dumps(dag_state.get('edges', []), ensure_ascii=False)}")
+
+    from backend.agent.tools.dag_editing_tools import save_dag as _save_dag_fn
+    result = await _save_dag_fn(pipeline_id=pipeline_id, dag_state=dag_state)
+    logger.info(f"[dag-save] result={_json.dumps(result, ensure_ascii=False)}")
+    if result.get("error"):
+        return {"success": False, "error": result["error"]}
+    return {"success": True, "message": result.get("message", "已保存"), "pipeline_id": result.get("pipeline_id", pipeline_id)}
+
+
+# ── DAG 编辑助手 ──────────────────────────────────────────────
+
+@app.post("/api/dag-assist")
+async def dag_assist(payload: dict[str, Any]):
+    """DAG 编辑 AI 助手：有状态多轮对话（非流式）。
+
+    请求 body: { prompt, dag_state?, session_id?, pipeline_id? }
+    dag_state: { nodes[], edges[], pipeline_id?, pipeline_name? }
+    """
+    user_input = payload.get("prompt", payload.get("input", ""))
+    if not user_input:
+        raise HTTPException(400, "prompt is required")
+
+    if STANDALONE_MODE:
+        raise HTTPException(400, "DAG 助手需要 LLM，不支持 standalone 模式")
+
+    if not _planning_agent:
+        raise HTTPException(500, "Planning Agent not initialized (check LLM config)")
+
+    session_id = payload.get("session_id")
+    dag_state = payload.get("dag_state")
+    pipeline_id = payload.get("pipeline_id", "")
+
+    parts = [user_input]
+    if pipeline_id:
+        parts.append(f"[pipeline_id={pipeline_id}]")
+    if dag_state and not session_id:
+        parts.append("[当前 DAG 状态已通过 dag_state 传入]")
+    enriched_input = "\n\n".join(parts)
+
+    plan_result = await _planning_agent.chat(
+        enriched_input,
+        session_id=session_id,
+        mode="dag",
+    )
+
+    resp: dict[str, Any] = {
+        "success": plan_result.success,
+        "session_id": plan_result.session_id,
+        "response": plan_result.yaml_text if plan_result.success else "",
+        "error": "; ".join(plan_result.errors) if plan_result.errors else "",
+        "iterations": plan_result.iterations,
+        "tool_calls": plan_result.tool_calls_log,
+        "dag_updates": plan_result.dag_updates,
+    }
+    if plan_result.requires_confirmation:
+        resp["requires_confirmation"] = True
+        resp["pending_tool"] = plan_result.pending_tool
+    return resp
+
+
+@app.post("/api/dag-assist/stream")
+async def dag_assist_stream(payload: dict[str, Any]):
+    """DAG 编辑 AI 助手：流式 SSE 端点。
+
+    事件类型: thinking / tool_call / tool_result / dag_update / text / error / done
+    """
+    user_input = payload.get("prompt", payload.get("input", ""))
+    if not user_input:
+        raise HTTPException(400, "prompt is required")
+
+    if STANDALONE_MODE:
+        raise HTTPException(400, "DAG 助手需要 LLM，不支持 standalone 模式")
+
+    if not _planning_agent:
+        raise HTTPException(500, "Planning Agent not initialized (check LLM config)")
+
+    session_id = payload.get("session_id")
+    dag_state = payload.get("dag_state")
+    pipeline_id = payload.get("pipeline_id", "")
+
+    parts = [user_input]
+    if pipeline_id:
+        parts.append(f"[pipeline_id={pipeline_id}]")
+    if dag_state and not session_id:
+        parts.append("[当前 DAG 状态已通过 dag_state 传入]")
+    enriched_input = "\n\n".join(parts)
+
+    import json as _json
+
+    async def event_generator():
+        try:
+            async for event in _planning_agent.chat_stream(
+                enriched_input,
+                session_id=session_id,
+                mode="dag",
+            ):
+                yield f"event: {event.type}\ndata: {_json.dumps(event.data, ensure_ascii=False)}\n\n"
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            yield f"event: error\ndata: {_json.dumps({'message': str(e)}, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
 @app.get("/api/workflows")
 async def list_workflows():
     """List available workflow YAML files."""

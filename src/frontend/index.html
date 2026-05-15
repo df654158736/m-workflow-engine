@@ -300,6 +300,47 @@ body {
 }
 .mode-tab.active { background: #1e3a5f; border-color: #3b82f6; color: #93c5fd; font-weight: 600; }
 
+/* DAG Editing Mode */
+#dag-edit-mode { display: none; }
+.dag-edit-layout { display: flex; height: calc(100vh - 160px); gap: 0; }
+.dag-edit-chat {
+  width: 400px; min-width: 320px; display: flex; flex-direction: column;
+  background: #111827; border: 1px solid #1f2937; border-radius: 10px 0 0 10px; overflow: hidden;
+}
+.dag-edit-chat .chat-header { padding: 10px 14px; background: #1e293b; border-bottom: 1px solid #2d3748; display: flex; align-items: center; justify-content: space-between; }
+.dag-edit-chat .chat-header h3 { font-size: 13px; color: #60a5fa; margin: 0; }
+.dag-edit-chat .chat-messages { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+.dag-edit-chat .chat-input-row { padding: 10px 14px; display: flex; gap: 8px; background: #1e293b; border-top: 1px solid #2d3748; }
+.dag-edit-chat .chat-input-row input { flex: 1; padding: 8px 12px; background: #0f172a; border: 1px solid #334155; border-radius: 6px; color: #e2e8f0; font-size: 13px; }
+.dag-edit-chat .chat-input-row button { padding: 8px 16px; background: #3b82f6; border: none; border-radius: 6px; color: #fff; cursor: pointer; font-weight: 600; font-size: 13px; }
+.dag-edit-chat .chat-input-row button:disabled { opacity: 0.5; cursor: not-allowed; }
+.dag-edit-canvas {
+  flex: 1; background: #0d1117; border: 1px solid #1f2937; border-left: none;
+  border-radius: 0 10px 10px 0; position: relative; overflow: auto; padding: 20px;
+}
+.dag-edit-canvas svg { width: 100%; height: 100%; }
+.dag-node-card {
+  position: absolute; min-width: 160px; background: #1e293b; border: 1px solid #334155;
+  border-radius: 8px; padding: 10px 14px; font-size: 12px; color: #e2e8f0; cursor: default;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+}
+.dag-node-card.source { border-color: #3b82f6; }
+.dag-node-card.sink { border-color: #10b981; }
+.dag-node-card.step { border-color: #8b5cf6; }
+.dag-node-card.step.new { border-color: #f59e0b; animation: dagNodePulse 0.6s ease-out; }
+@keyframes dagNodePulse { 0% { box-shadow: 0 0 0 4px rgba(245,158,11,0.4); } 100% { box-shadow: 0 2px 8px rgba(0,0,0,0.3); } }
+.dag-node-type { font-size: 10px; color: #6b7280; text-transform: uppercase; letter-spacing: 1px; }
+.dag-node-label { font-size: 13px; font-weight: 600; margin-top: 2px; }
+.dag-node-desc { font-size: 11px; color: #94a3b8; margin-top: 4px; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dag-edit-toolbar { position: absolute; top: 12px; right: 12px; display: flex; gap: 6px; }
+.dag-edit-toolbar button {
+  padding: 4px 10px; background: #1e293b; border: 1px solid #334155;
+  border-radius: 4px; color: #94a3b8; cursor: pointer; font-size: 11px;
+}
+.dag-edit-toolbar button:hover { background: #334155; color: #e2e8f0; }
+.dag-edit-empty { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); color: #4b5563; font-size: 14px; text-align: center; }
+.dag-edit-pid { position: absolute; bottom: 12px; left: 12px; font-size: 11px; color: #374151; }
+
 /* Data-First Chat UI */
 #datafirst-mode { display: none; }
 .df-layout { display: flex; height: calc(100vh - 160px); gap: 0; }
@@ -574,6 +615,7 @@ body {
     <div class="mode-tab active" onclick="switchMode('agent')">🤖 Agent 模式（用户输入 → LLM 规划 → 执行）</div>
     <div class="mode-tab" onclick="switchMode('preset')">📋 预设场景（选择已有 workflow 执行）</div>
     <div class="mode-tab" onclick="switchMode('datafirst')">🗂️ 数据接入（自然语言 → 本体 → Pipeline）</div>
+    <div class="mode-tab" onclick="switchMode('dag-edit')">🔧 DAG 编辑（自然语言操作 Pipeline DAG）</div>
   </div>
 
   <!-- Agent Mode: Input → Plan → Execute -->
@@ -640,6 +682,39 @@ body {
           <input type="text" id="df-input" placeholder="例：帮我把 df_product 表接入系统，创建 Product 本体" onkeydown="if(event.key==='Enter')sendDatafirst()" />
           <button id="df-send-btn" onclick="sendDatafirst()">发送</button>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- DAG Edit Mode -->
+  <div id="dag-edit-mode">
+    <div class="dag-edit-layout">
+      <div class="dag-edit-chat">
+        <div class="chat-header">
+          <h3>🔧 Pipeline DAG 助手</h3>
+          <div class="chat-status" id="de-status">输入 Pipeline ID 开始</div>
+        </div>
+        <div style="padding:8px 14px;background:#0f172a;border-bottom:1px solid #2d3748;display:flex;gap:6px;">
+          <input type="text" id="de-pipeline-id" placeholder="Pipeline ID" style="flex:1;padding:6px 10px;background:#1e293b;border:1px solid #334155;border-radius:4px;color:#e2e8f0;font-size:12px;" value="019e19ed-15fd-75f3-a6b7-1c31f27110e1" />
+          <button onclick="deLoadPipeline()" style="padding:6px 12px;background:#059669;border:none;border-radius:4px;color:#fff;font-size:12px;cursor:pointer;">加载</button>
+        </div>
+        <div class="chat-messages" id="de-messages">
+          <div class="chat-msg system">输入 Pipeline ID 并点击"加载"，然后用自然语言描述你想做的 DAG 操作。</div>
+        </div>
+        <div class="chat-input-row">
+          <input type="text" id="de-input" placeholder="例：添加一个过滤节点，过滤 status 为 CANCELED 的记录" onkeydown="if(event.key==='Enter')deSendChat()" disabled />
+          <button id="de-send-btn" onclick="deSendChat()" disabled>发送</button>
+        </div>
+      </div>
+      <div class="dag-edit-canvas" id="de-canvas">
+        <div class="dag-edit-empty" id="de-empty">加载 Pipeline 后此处显示 DAG</div>
+        <svg id="de-svg" style="position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;"></svg>
+        <div id="de-nodes"></div>
+        <div class="dag-edit-toolbar">
+          <button onclick="deRefreshDag()">🔄 刷新</button>
+          <button id="de-save-btn" onclick="deSaveToPaas()" style="background:#2563eb;" disabled>💾 保存到 zhice</button>
+        </div>
+        <div class="dag-edit-pid" id="de-pid-label"></div>
       </div>
     </div>
   </div>
@@ -1156,7 +1231,7 @@ function addTimelineRaw(html) {
 
 // --- Mode Switching ---
 function switchMode(mode) {
-  const modes = ['agent', 'preset', 'datafirst'];
+  const modes = ['agent', 'preset', 'datafirst', 'dag-edit'];
   document.querySelectorAll('.mode-tab').forEach((t, i) => {
     t.classList.toggle('active', mode === modes[i]);
   });
@@ -1164,7 +1239,7 @@ function switchMode(mode) {
     const el = document.getElementById(m + '-mode');
     if (el) el.style.display = m === mode ? 'block' : 'none';
   });
-  if (mode === 'datafirst') {
+  if (mode === 'datafirst' || mode === 'dag-edit') {
     document.querySelector('.main-grid').style.display = 'none';
   } else {
     document.querySelector('.main-grid').style.display = '';
@@ -1873,6 +1948,369 @@ async function confirmPlan() {
   currentFile = plannedFile;
   await runWorkflow();
   setPipelineActive(5);
+}
+
+// --- DAG Edit Mode ---
+let _deSessionId = '';
+let _deBusy = false;
+let _deNodes = [];
+let _deEdges = [];
+let _dePipelineId = '';
+let _dePipelineName = '';
+let _deDirty = false;
+let _deSaving = false;
+
+function deAddMsg(role, content) {
+  const box = document.getElementById('de-messages');
+  const div = document.createElement('div');
+  div.className = 'chat-msg ' + role;
+  if (role === 'agent') {
+    div.innerHTML = renderMarkdown(content);
+  } else {
+    div.textContent = content;
+  }
+  box.appendChild(div);
+  box.scrollTop = box.scrollHeight;
+}
+
+async function deLoadPipeline() {
+  const pid = document.getElementById('de-pipeline-id').value.trim();
+  if (!pid) return;
+  _dePipelineId = pid;
+  document.getElementById('de-status').textContent = '加载中...';
+  document.getElementById('de-pid-label').textContent = '';
+
+  try {
+    const resp = await fetch('/api/dag-assist/stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: '读取当前 Pipeline 的 DAG 状态，告诉我有哪些节点和连线', pipeline_id: pid }),
+    });
+    if (!resp.ok || !resp.body) {
+      deAddMsg('system', '❌ 加载失败: ' + resp.status);
+      return;
+    }
+    await _deConsumeStream(resp);
+    document.getElementById('de-input').disabled = false;
+    document.getElementById('de-send-btn').disabled = false;
+    document.getElementById('de-pid-label').textContent = 'Pipeline: ' + pid;
+  } catch (e) {
+    deAddMsg('system', '❌ 连接失败: ' + e.message);
+  }
+  document.getElementById('de-status').textContent = '就绪';
+}
+
+async function deSendChat() {
+  if (_deBusy) return;
+  const input = document.getElementById('de-input');
+  const msg = input.value.trim();
+  if (!msg) return;
+  input.value = '';
+  deAddMsg('user', msg);
+
+  _deBusy = true;
+  document.getElementById('de-send-btn').disabled = true;
+  document.getElementById('de-status').textContent = '思考中...';
+
+  const dagState = {
+    pipeline_id: _dePipelineId,
+    pipeline_name: _dePipelineName,
+    nodes: _deNodes.map(n => ({ id: n.id, type: n.type, label: n.label, config: n.config || {}, sqlFragment: n.sqlFragment || '', description: n.description || '' })),
+    edges: _deEdges.map(e => ({ source: e.source, target: e.target })),
+  };
+
+  try {
+    const resp = await fetch('/api/dag-assist/stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: msg, dag_state: dagState, session_id: _deSessionId || undefined, pipeline_id: _dePipelineId }),
+    });
+    if (!resp.ok || !resp.body) {
+      deAddMsg('system', '❌ 请求失败: ' + resp.status);
+    } else {
+      await _deConsumeStream(resp);
+    }
+  } catch (e) {
+    deAddMsg('system', '❌ 连接失败: ' + e.message);
+  }
+
+  _deBusy = false;
+  document.getElementById('de-send-btn').disabled = false;
+  document.getElementById('de-status').textContent = '就绪';
+}
+
+async function _deConsumeStream(resp) {
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  const box = document.getElementById('de-messages');
+  const agentDiv = document.createElement('div');
+  agentDiv.className = 'chat-msg agent';
+  const textSpan = document.createElement('span');
+  agentDiv.appendChild(textSpan);
+  box.appendChild(agentDiv);
+
+  let fullText = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    const lines = buffer.split('\n');
+    buffer = lines.pop();
+
+    let evtType = null;
+    for (const line of lines) {
+      if (line.startsWith('event: ')) {
+        evtType = line.slice(7).trim();
+      } else if (line.startsWith('data: ') && evtType) {
+        let evtData;
+        try { evtData = JSON.parse(line.slice(6)); } catch { evtData = {}; }
+
+        switch (evtType) {
+          case 'thinking':
+            fullText = evtData.content || '';
+            textSpan.innerHTML = renderMarkdown(fullText);
+            document.getElementById('de-status').textContent = '思考中...';
+            break;
+          case 'text':
+            fullText = evtData.content || '';
+            textSpan.innerHTML = renderMarkdown(fullText);
+            break;
+          case 'tool_call': {
+            const card = document.createElement('div');
+            card.className = 'df-tool-card running';
+            card.innerHTML = `<span class="df-tc-icon">⏳</span> <code>${evtData.tool}</code>`;
+            agentDiv.appendChild(card);
+            document.getElementById('de-status').textContent = `调用 ${evtData.tool}...`;
+            break;
+          }
+          case 'tool_result': {
+            const lastCard = agentDiv.querySelector('.df-tool-card.running');
+            if (lastCard) {
+              const ok = !evtData.result?.error;
+              lastCard.className = 'df-tool-card ' + (ok ? 'done' : 'failed');
+              lastCard.querySelector('.df-tc-icon').textContent = ok ? '✅' : '❌';
+            }
+            if (evtData.tool === 'read_dag_state' && evtData.result?.nodes) {
+              _deApplyDagUpdate(evtData.result);
+            }
+            break;
+          }
+          case 'dag_update':
+            _deApplyDagUpdate(evtData);
+            break;
+          case 'done':
+            if (evtData.session_id) _deSessionId = evtData.session_id;
+            break;
+          case 'error':
+            deAddMsg('system', '⚠️ ' + (evtData.message || '未知错误'));
+            break;
+        }
+        evtType = null;
+      }
+    }
+    box.scrollTop = box.scrollHeight;
+  }
+
+  if (!fullText && !agentDiv.querySelector('.df-tool-card')) {
+    agentDiv.remove();
+  }
+}
+
+function _deApplyDagUpdate(data) {
+  const action = data.action;
+  console.log('[DAG_UPDATE]', 'action=', action, 'edges_before=', JSON.stringify(_deEdges), 'data.edges=', JSON.stringify(data.edges));
+
+  if (action === 'add') {
+    (data.steps || []).forEach(n => _deNodes.push(n));
+    _deEdges = data.edges || [];
+    console.log('[DAG_UPDATE] after add, _deEdges=', JSON.stringify(_deEdges));
+    deAddMsg('system', `✅ 已添加 ${(data.steps||[]).length} 个节点`);
+  } else if (action === 'modify') {
+    (data.steps || []).forEach(s => {
+      const node = _deNodes.find(n => n.id === s.id);
+      if (!node) return;
+      if (s.config) node.config = s.config;
+      if (s.sqlFragment !== undefined) node.sqlFragment = s.sqlFragment;
+      if (s.description !== undefined) node.description = s.description;
+      if (s.label !== undefined) node.label = s.label;
+    });
+    deAddMsg('system', `✅ 已修改 ${(data.steps||[]).length} 个节点`);
+  } else if (action === 'remove') {
+    const removeIds = new Set(data.remove_node_ids || []);
+    _deNodes = _deNodes.filter(n => !removeIds.has(n.id));
+    if (data.edges) {
+      _deEdges = data.edges;
+    } else {
+      _deEdges = _deEdges.filter(e => !removeIds.has(e.source) && !removeIds.has(e.target));
+    }
+    deAddMsg('system', `✅ 已删除 ${removeIds.size} 个节点`);
+  } else if (action === 'replace_all') {
+    const sources = _deNodes.filter(n => n.type === 'SOURCE');
+    const sinks = _deNodes.filter(n => n.type === 'SINK');
+    _deNodes = [...sources, ...(data.steps || []), ...sinks];
+    _deEdges = data.edges || [];
+    deAddMsg('system', `✅ 已生成完整流程 (${(data.steps||[]).length} 个节点)`);
+  }
+
+  // read_dag_state 工具返回时，初始化节点数据
+  if (!action && data.nodes) {
+    _deNodes = data.nodes || [];
+    _deEdges = data.edges || [];
+    _dePipelineName = data.pipeline_name || '';
+  }
+
+  deRenderDag();
+
+  if (action && _dePipelineId) {
+    _deDirty = true;
+    const saveBtn = document.getElementById('de-save-btn');
+    if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = '💾 保存到 zhice *'; }
+  }
+}
+
+async function deSaveToPaas() {
+  if (!_dePipelineId || !_deNodes.length || _deSaving) return;
+  _deSaving = true;
+  const saveBtn = document.getElementById('de-save-btn');
+  if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = '💾 保存中...'; }
+  console.log('[SAVE] _deEdges at save time:', JSON.stringify(_deEdges));
+  const dagState = {
+    nodes: _deNodes.map(n => ({ id: n.id, type: n.type, label: n.label, config: n.config || {}, sqlFragment: n.sqlFragment || '', description: n.description || '' })),
+    edges: _deEdges.map(e => ({ source: e.source, target: e.target })),
+  };
+  console.log('[SAVE] dagState.edges:', JSON.stringify(dagState.edges));
+  try {
+    const resp = await fetch('/api/dag-save', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pipeline_id: _dePipelineId, dag_state: dagState }),
+    });
+    const result = await resp.json();
+    if (result.success) {
+      if (result.pipeline_id && result.pipeline_id !== _dePipelineId) {
+        _dePipelineId = result.pipeline_id;
+        document.getElementById('de-pipeline-id').value = _dePipelineId;
+        document.getElementById('de-pid-label').textContent = 'Pipeline: ' + _dePipelineId;
+      }
+      _deDirty = false;
+      deAddMsg('system', '💾 已保存到 zhice-paas');
+      if (saveBtn) { saveBtn.textContent = '💾 保存到 zhice'; }
+    } else {
+      deAddMsg('system', '⚠️ 保存失败: ' + (result.error || '未知错误'));
+      if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = '💾 保存到 zhice *'; }
+    }
+  } catch (e) {
+    deAddMsg('system', '⚠️ 保存失败: ' + e.message);
+    if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = '💾 保存到 zhice *'; }
+  } finally {
+    _deSaving = false;
+  }
+}
+
+function deRenderDag() {
+  const container = document.getElementById('de-nodes');
+  const svg = document.getElementById('de-svg');
+  const empty = document.getElementById('de-empty');
+  container.innerHTML = '';
+  svg.innerHTML = '';
+
+  if (!_deNodes.length) {
+    empty.style.display = '';
+    return;
+  }
+  empty.style.display = 'none';
+
+  // Topological depth layout
+  const depthMap = {};
+  function getDepth(id) {
+    if (depthMap[id] !== undefined) return depthMap[id];
+    const ins = _deEdges.filter(e => e.target === id);
+    if (!ins.length) { depthMap[id] = 0; return 0; }
+    const d = Math.max(...ins.map(e => getDepth(e.source))) + 1;
+    depthMap[id] = d;
+    return d;
+  }
+  _deNodes.forEach(n => getDepth(n.id));
+
+  const layers = {};
+  _deNodes.forEach(n => {
+    const d = depthMap[n.id] || 0;
+    if (!layers[d]) layers[d] = [];
+    layers[d].push(n);
+  });
+
+  const X_STEP = 220, Y_STEP = 100, PAD_X = 40, PAD_Y = 40;
+  const positions = {};
+  const depths = Object.keys(layers).map(Number).sort((a, b) => a - b);
+
+  depths.forEach(depth => {
+    const arr = layers[depth];
+    arr.forEach((node, i) => {
+      const x = PAD_X + depth * X_STEP;
+      const y = PAD_Y + i * Y_STEP;
+      positions[node.id] = { x, y };
+
+      const typeClass = node.type === 'SOURCE' ? 'source' : node.type === 'SINK' ? 'sink' : 'step';
+      const div = document.createElement('div');
+      div.className = 'dag-node-card ' + typeClass;
+      div.style.left = x + 'px';
+      div.style.top = y + 'px';
+      div.innerHTML = `
+        <div class="dag-node-type">${node.type}</div>
+        <div class="dag-node-label">${node.label || node.id}</div>
+        ${node.description ? `<div class="dag-node-desc" title="${node.description}">${node.description}</div>` : ''}
+      `;
+      container.appendChild(div);
+    });
+  });
+
+  // Draw edges
+  const NS = 'http://www.w3.org/2000/svg';
+  svg.setAttribute('viewBox', `0 0 ${PAD_X * 2 + depths.length * X_STEP} ${PAD_Y * 2 + Math.max(...Object.values(layers).map(a => a.length)) * Y_STEP}`);
+  _deEdges.forEach(e => {
+    const from = positions[e.source];
+    const to = positions[e.target];
+    if (!from || !to) return;
+    const line = document.createElementNS(NS, 'line');
+    line.setAttribute('x1', from.x + 80);
+    line.setAttribute('y1', from.y + 25);
+    line.setAttribute('x2', to.x);
+    line.setAttribute('y2', to.y + 25);
+    line.setAttribute('stroke', '#334155');
+    line.setAttribute('stroke-width', '2');
+    line.setAttribute('marker-end', 'url(#de-arrow)');
+    svg.appendChild(line);
+  });
+
+  // Arrow marker
+  const defs = document.createElementNS(NS, 'defs');
+  const marker = document.createElementNS(NS, 'marker');
+  marker.setAttribute('id', 'de-arrow');
+  marker.setAttribute('viewBox', '0 0 10 10');
+  marker.setAttribute('refX', '10');
+  marker.setAttribute('refY', '5');
+  marker.setAttribute('markerWidth', '6');
+  marker.setAttribute('markerHeight', '6');
+  marker.setAttribute('orient', 'auto-start-reverse');
+  const path = document.createElementNS(NS, 'path');
+  path.setAttribute('d', 'M 0 0 L 10 5 L 0 10 z');
+  path.setAttribute('fill', '#4b5563');
+  marker.appendChild(path);
+  defs.appendChild(marker);
+  svg.insertBefore(defs, svg.firstChild);
+}
+
+function deRefreshDag() {
+  if (!_dePipelineId) return;
+  _deSessionId = '';
+  _deNodes = [];
+  _deEdges = [];
+  deRenderDag();
+  deLoadPipeline();
 }
 
 // --- Init (load presets for preset mode) ---

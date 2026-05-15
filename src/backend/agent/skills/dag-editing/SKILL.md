@@ -32,11 +32,13 @@ interface DagEdgeData { id: string; source: string; target: string }
 
 ## action 协议详解
 
-### add — 新增节点
+### add — 新增节点（含插入）
 
-用户说"加一个过滤节点"、"在 JOIN 后面加聚合"。
+用户说"加一个过滤节点"、"在 JOIN 后面加聚合"、"在 transform 和 sink 之间插入过滤"。
 
-返回示例：
+**edges 是改动后的完整边列表**，前端整体替换。先调 `read_dag_state` 获取当前边，在此基础上增删。
+
+**尾部追加**示例（当前边: [src-df_order → sink-yyy]，在末尾添加过滤）：
 ```json
 {
   "action": "add",
@@ -48,9 +50,33 @@ interface DagEdgeData { id: string; source: string; target: string }
     "sqlFragment": "SELECT * FROM input\nWHERE status != 'CANCELED'",
     "description": "过滤掉已取消的订单"
   }],
-  "edges": [{ "source": "src-df_order", "target": "filter-a3b2c1" }]
+  "edges": [
+    { "source": "src-df_order", "target": "filter-a3b2c1" },
+    { "source": "filter-a3b2c1", "target": "sink-yyy" }
+  ]
 }
 ```
+
+**中间插入**示例（当前边: [src-order → transform-xxx, transform-xxx → sink-yyy]，在 transform 和 sink 之间插入过滤）：
+```json
+{
+  "action": "add",
+  "steps": [{
+    "id": "filter-a3b2c1",
+    "type": "FILTER",
+    "label": "过滤 id=1",
+    "config": { "condition": "id = 1" },
+    "sqlFragment": "SELECT * FROM input WHERE id = 1",
+    "description": "只保留 id=1 的记录"
+  }],
+  "edges": [
+    { "source": "src-order", "target": "transform-xxx" },
+    { "source": "transform-xxx", "target": "filter-a3b2c1" },
+    { "source": "filter-a3b2c1", "target": "sink-yyy" }
+  ]
+}
+```
+注意：原来的 transform-xxx → sink-yyy 不在新 edges 中（被新节点取代），前端整体替换边数组。
 
 ### modify — 修改已有节点
 
@@ -100,3 +126,19 @@ interface DagEdgeData { id: string; source: string; target: string }
 - SINK 节点：前端自动管理，AI 不操作（除 replace_all 场景）
 - `is_gold_mirror=true` 节点：前端为金层镜像自动创建的虚拟节点，AI 完全忽略
 - 读取 dag_state 时必须过滤掉上述虚拟节点再传给 LLM
+
+## 持久化与生命周期（运维要点）
+
+### 自动保存
+- 前端在每次 dag_update（add/modify/remove/replace_all）后自动调 `PUT /api/v1/pipelines/{id}/draft` 同步到 zhice-paas
+- 内置 1.5 秒防抖 + 并发锁：连续多次操作（如批量删除）只触发一次保存，避免竞态
+- **使用 updateDraft 端点（非旧的 updatePipeline）**，就地更新，pipeline ID 保持不变
+
+### Pipeline 生命周期
+- **DRAFT** → 可编辑 DAG、可发布，不可运行
+- **PUBLISHED** → 只读、可运行、可 Fork，不可编辑（需先 unpublish）
+- 编辑前检查 `pipeline_status`，PUBLISHED 状态的 save 会被拒绝
+- 工具：`publish_pipeline` / `unpublish_pipeline` / `fork_pipeline`
+
+### 请求体格式
+- 请求体格式与 zhice 前端一致：camelCase 字段名（`stepId`、`genericConfig`、`connectionId` 等）

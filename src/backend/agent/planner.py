@@ -97,6 +97,69 @@ edges:
 {skills_context}
 """
 
+DAG_TOOLS = {
+    "read_dag_state",
+    "add_dag_node",
+    "modify_dag_node",
+    "remove_dag_node",
+    "generate_full_dag",
+    "save_dag",
+    "get_skill_detail",
+}
+
+DAG_PROMPT_TEMPLATE = """你是一个 Pipeline DAG 编辑助手。用户用自然语言描述对 DAG 的操作需求，你通过工具读取当前 DAG 状态、新增/修改/删除节点。
+
+## ⚠️ 多轮对话
+
+这是一个持续的多轮对话。你的 messages 中包含之前所有轮次的完整内容。
+**你必须基于已有上下文继续工作，而不是重新开始。**
+
+## 你的能力
+
+- `read_dag_state` — 读取当前 Pipeline DAG 的节点、边和 SOURCE 表 schema
+- `add_dag_node` — 向 DAG 添加新节点，edges 传改动后的完整边列表（action: add）
+- `modify_dag_node` — 修改已有节点的 config/SQL/描述（action: modify）
+- `remove_dag_node` — 删除节点并自动重连上下游（action: remove）
+- `generate_full_dag` — 生成完整 DAG 流程（action: replace_all）
+- `save_dag` — 将编辑后的 DAG 保存到 zhice-paas（需用户确认）
+- `get_skill_detail` — 查询节点类型的详细 config 字段规范
+
+## 输出格式
+
+所有 DAG 操作必须通过工具返回，不要在文本中输出 JSON。工具会返回带 `dag_update: true` 标记的结构化结果，前端自动消费。
+
+## 核心规则
+
+1. **先读后写（强制）** — 任何 add/modify/remove 操作前，必须先调 `read_dag_state` 获取当前节点和边。不读就写会导致插入节点时连线错误！
+2. **config 非空** — 每个节点的 config 必须包含该类型的必填字段
+3. **sqlFragment 必填** — SQL 类节点（FILTER/JOIN/SQL_TRANSFORM/TRANSFORM/QUERY/DEDUPLICATE/GROUP_AGGREGATION/WINDOW_AGGREGATION/UNION/MAP）必须生成对应 SQL
+4. **description 必填** — 中文描述该节点的加工逻辑
+5. **不操作 SOURCE** — 数据锚点，不可删除
+6. **不操作 gold_mirror** — `is_gold_mirror=true` 的虚拟节点由前端管理
+7. **不传 position** — 前端自动按拓扑深度布局
+8. **edges 用 source/target** — 不是 from/to
+9. **节点 ID 格式** — `{{type_lower}}-{{random6}}`，如 `filter-a3b2c1`
+10. **自动保存** — 每次 add/modify/remove/replace_all 操作后，前端会自动同步到 zhice-paas，不需要额外调 save_dag
+11. **save_dag 仅在自动保存失败时使用** — 用户说"保存"时直接回复"每次编辑已自动同步到 zhice-paas"即可
+
+## 操作流程示例
+
+用户说"加一个过滤节点过滤 id=1"：
+1. 先调 `read_dag_state`，发现当前边为 [src-order → transform-xxx, transform-xxx → sink-yyy]
+2. 决定在 transform-xxx 和 sink-yyy 之间插入过滤节点 filter-abc123
+3. 调 `add_dag_node`，steps 传新节点，edges 传改动后的**完整边列表**：
+   [{{source: "src-order", target: "transform-xxx"}}, {{source: "transform-xxx", target: "filter-abc123"}}, {{source: "filter-abc123", target: "sink-yyy"}}]
+   注意：原来的 transform-xxx → sink-yyy 这条边不在新列表中（因为被新节点取代了），前端会整体替换所有边
+
+## 回复风格
+
+- 操作完成后简要说明做了什么
+- 不要输出原始 JSON，工具结果会自动推送到前端
+- 如果用户需求不明确，先确认再操作
+
+{skills_context}
+"""
+
 DATAFIRST_TOOLS = {
     "list_datasources",
     "list_tables",
@@ -281,6 +344,7 @@ class PlanResult:
     requires_confirmation: bool = False
     pending_tool: dict | None = None
     tokens_used: int = 0
+    dag_updates: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -338,7 +402,12 @@ class PlanningAgent:
     def _build_system_messages(self, user_input: str, mode: str) -> list[dict[str, Any]]:
         """构建 system prompt messages。"""
         skills_context = self.skills.load_relevant(user_input, mode=mode)
-        template = DATAFIRST_PROMPT_TEMPLATE if mode == "datafirst" else SYSTEM_PROMPT_TEMPLATE
+        if mode == "datafirst":
+            template = DATAFIRST_PROMPT_TEMPLATE
+        elif mode == "dag":
+            template = DAG_PROMPT_TEMPLATE
+        else:
+            template = SYSTEM_PROMPT_TEMPLATE
         system_prompt = template.format(
             skills_context=f"\n## 领域知识\n\n{skills_context}" if skills_context else ""
         )
@@ -364,14 +433,14 @@ class PlanningAgent:
         user_input: str,
         session_id: str | None = None,
         confirmed_tool: dict | None = None,
+        mode: str = "datafirst",
     ) -> PlanResult:
-        """有状态对话（datafirst 模式使用）。
+        """有状态对话（datafirst / dag 模式使用）。
 
         session_id 为空时创建新 Session；
         有值时追加用户消息到已有 Session 继续。
         confirmed_tool: 用户确认执行的工具 {"tool": "xxx", "args": {...}}
         """
-        mode = "datafirst"
 
         if session_id:
             session = await self.sessions.get(session_id)
@@ -436,6 +505,8 @@ class PlanningAgent:
 
         if mode == "datafirst":
             tool_schemas = self.tools.schemas(only=DATAFIRST_TOOLS) or None
+        elif mode == "dag":
+            tool_schemas = self.tools.schemas(only=DAG_TOOLS) or None
         else:
             tool_schemas = self.tools.schemas() or None
 
@@ -550,6 +621,11 @@ class PlanningAgent:
                             "content": truncate_tool_result(result_str),
                         })
 
+                        if tool_result.get("dag_update"):
+                            result.dag_updates.append(
+                                {k: v for k, v in tool_result.items() if k != "dag_update"}
+                            )
+
                     if pending_confirmation:
                         tc, fn_name, fn_args, conf_result = pending_confirmation
                         result.success = True
@@ -574,7 +650,7 @@ class PlanningAgent:
                         result.iterations = iteration + 1
                         return result
 
-                if mode != "datafirst" and iteration + 1 >= self._nudge_threshold:
+                if mode not in ("datafirst", "dag") and iteration + 1 >= self._nudge_threshold:
                     messages.append({
                         "role": "user",
                         "content": "你已经用了多轮来查询信息。请立即根据已有信息生成完整的 YAML 工作流，用 ```yaml 代码块输出。",
@@ -586,12 +662,12 @@ class PlanningAgent:
             messages.append({"role": "assistant", "content": content})
             result.thinking_log.append(content)
 
-            # datafirst 模式：Agent 输出文本即为最终回复（暂停等用户）
-            if mode == "datafirst":
+            # datafirst / dag 模式：Agent 输出文本即为最终回复（暂停等用户）
+            if mode in ("datafirst", "dag"):
                 if choice.finish_reason == "stop":
                     result.success = True
                     result.yaml_text = content
-                    logger.info("Datafirst response complete", iterations=iteration + 1)
+                    logger.info(f"{mode} response complete", iterations=iteration + 1)
                     return result
                 continue
 
@@ -694,9 +770,9 @@ class PlanningAgent:
         user_input: str,
         session_id: str | None = None,
         confirmed_tool: dict | None = None,
+        mode: str = "datafirst",
     ) -> AsyncGenerator[AgentEvent, None]:
         """有状态对话 — 流式版本。"""
-        mode = "datafirst"
 
         if session_id:
             session = await self.sessions.get(session_id)
@@ -881,10 +957,14 @@ class PlanningAgent:
                         "tool_call_id": tc_id,
                         "content": truncate_tool_result(result_str),
                     })
+
                     yield AgentEvent(type="tool_result", data={
                         "tool": fn_name,
                         "result": tool_result,
                     })
+                    if tool_result.get("dag_update"):
+                        dag_event_data = {k: v for k, v in tool_result.items() if k != "dag_update"}
+                        yield AgentEvent(type="dag_update", data=dag_event_data)
 
                 if pending_confirmation:
                     tc_id, fn_name, fn_args, conf_result = pending_confirmation
@@ -912,7 +992,7 @@ class PlanningAgent:
             if collected_content:
                 messages.append({"role": "assistant", "content": collected_content})
                 yield AgentEvent(type="text", data={"content": collected_content})
-                if mode == "datafirst" and finish_reason == "stop":
+                if mode in ("datafirst", "dag") and finish_reason == "stop":
                     return
                 continue
 

@@ -92,14 +92,23 @@ async def api_post(path: str, json_data: dict[str, Any] | None = None) -> Any:
 
 
 async def api_put(path: str, json_data: dict[str, Any] | None = None) -> Any:
-    """PUT 请求，自动解包 {code, data} 响应。"""
-    client = get_client()
-    resp = await client.put(path, json=json_data)
-    resp.raise_for_status()
-    body = resp.json()
-    if body.get("code") != 200:
-        raise ApiError(body.get("code", -1), body.get("message", "unknown"))
-    return body.get("data")
+    """PUT 请求，自动解包 {code, data} 响应。gRPC mid-frame 偶发异常自动重试一次。"""
+    import asyncio
+    last_err: ApiError | None = None
+    for attempt in range(2):
+        client = get_client()
+        resp = await client.put(path, json=json_data)
+        resp.raise_for_status()
+        body = resp.json()
+        if body.get("code") == 200:
+            return body.get("data")
+        msg = body.get("message", "")
+        if attempt == 0 and ("end-of-stream" in msg.lower() or "mid-frame" in msg.lower()):
+            last_err = ApiError(body.get("code", -1), msg)
+            await asyncio.sleep(0.3)
+            continue
+        raise ApiError(body.get("code", -1), msg)
+    raise last_err  # type: ignore[misc]
 
 
 async def api_delete(path: str) -> Any:
